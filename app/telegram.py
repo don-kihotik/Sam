@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
+import re
 from io import BytesIO
 
 from aiogram import Bot, Dispatcher, Router
+from aiogram.enums import ParseMode
 from aiogram.types import Message as TelegramMessage
 
 from app.ai import AIService
@@ -13,6 +16,14 @@ from app.db.session import Database
 from app.services import IncomingMessage, MessageProcessor, is_directly_addressed
 
 logger = logging.getLogger(__name__)
+
+_BOLD_PATTERN = re.compile(r"\*\*([^*\n]+)\*\*")
+
+
+def format_telegram_reply(text: str) -> str:
+    """Render Sam's limited Markdown safely as Telegram HTML."""
+    escaped = html.escape(text)
+    return _BOLD_PATTERN.sub(r"<b>\1</b>", escaped)
 
 
 class TelegramRuntime:
@@ -107,7 +118,10 @@ class TelegramRuntime:
             async with self.database.sessions() as session:
                 result = await self.processor.process(session, incoming)
             if result.reply and result.athlete_id:
-                sent = await message.reply(result.reply)
+                sent = await message.reply(
+                    format_telegram_reply(result.reply),
+                    parse_mode=ParseMode.HTML,
+                )
                 async with self.database.sessions() as session:
                     await self.processor.save_outgoing(
                         session,
