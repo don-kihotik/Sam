@@ -1,4 +1,5 @@
 from functools import lru_cache
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -31,7 +32,17 @@ class Settings(BaseSettings):
     @classmethod
     def normalize_postgres_scheme(cls, value: str) -> str:
         if value.startswith("postgresql://"):
-            return value.replace("postgresql://", "postgresql+asyncpg://", 1)
+            value = value.replace("postgresql://", "postgresql+asyncpg://", 1)
+        if value.startswith("postgresql+asyncpg://"):
+            parts = urlsplit(value)
+            query = dict(parse_qsl(parts.query, keep_blank_values=True))
+            sslmode = query.pop("sslmode", None)
+            query.pop("channel_binding", None)  # libpq option unsupported by asyncpg
+            if sslmode and sslmode != "disable":
+                query["ssl"] = "require"
+            value = urlunsplit(
+                (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
+            )
         return value
 
     @property
