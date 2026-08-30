@@ -52,6 +52,10 @@ class TelegramRuntime:
         if not (message.text or message.voice):
             return
 
+        if message.text and message.text.split("@", 1)[0].strip().lower() == "/whoami":
+            await message.reply(f"Твой Telegram user ID: {message.from_user.id}")
+            return
+
         text = message.text or ""
         transcript = None
         attachment: dict = {}

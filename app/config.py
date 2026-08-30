@@ -28,6 +28,16 @@ class Settings(BaseSettings):
     debug: bool = False
     recent_message_limit: int = Field(default=24, ge=5, le=100)
 
+    @field_validator(
+        "telegram_allowed_chat_id",
+        "alexey_telegram_user_id",
+        "andrey_telegram_user_id",
+        mode="before",
+    )
+    @classmethod
+    def empty_optional_id_is_none(cls, value: object) -> object:
+        return None if value == "" else value
+
     @field_validator("database_url")
     @classmethod
     def normalize_postgres_scheme(cls, value: str) -> str:

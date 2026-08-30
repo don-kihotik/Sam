@@ -175,6 +175,9 @@ observation as preliminary. For Andrey, Sam must not invent history.
 
 Ask the same question from both configured accounts. Then inspect:
 
+An unmapped group member can send `/whoami`; Sam replies with that member's numeric Telegram user
+ID. Add it as `ANDREY_TELEGRAM_USER_ID` and redeploy/update the Fly secret.
+
 ```powershell
 docker compose exec postgres psql -U sam -d sam -c `
   "select name, telegram_user_id from athletes order by name;"
