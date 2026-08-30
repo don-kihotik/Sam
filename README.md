@@ -135,6 +135,13 @@ Invoke-RestMethod https://sam-climbing.fly.dev/health
 Do not deploy with the default SQLite URL: a Fly Machine filesystem is ephemeral and Sam's memory
 would be lost when the Machine is replaced.
 
+### Low-cost unmanaged PostgreSQL on Fly
+
+`fly.postgres.toml` defines a private single-node PostgreSQL 17 app using the official pgvector
+image. It has no public service and is reachable only through Fly's private network. This is suitable
+for the small initial group, but it is not managed or highly available. Fly volume snapshots are the
+minimum recovery mechanism; periodically test restores and export an off-platform backup.
+
 ## How message processing works
 
 ```text

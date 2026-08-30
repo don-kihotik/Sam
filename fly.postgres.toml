@@ -1,0 +1,20 @@
+app = "sam-climbing-db"
+primary_region = "yyz"
+
+[build]
+  image = "pgvector/pgvector:pg17"
+
+[env]
+  PGDATA = "/data/postgresql"
+  POSTGRES_DB = "sam"
+  POSTGRES_USER = "sam"
+
+[[mounts]]
+  source = "sam_db_data"
+  destination = "/data"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
+
