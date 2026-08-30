@@ -100,6 +100,41 @@ uvicorn app.main:app --reload
 If Telegram or OpenAI credentials are absent, FastAPI still starts and reports the missing
 configuration through `/health`, but polling is disabled.
 
+## Deploy to Fly.io
+
+The repository includes `fly.toml` for a single always-running machine in Toronto (`yyz`). The
+machine must not auto-stop because Telegram long polling runs continuously.
+
+Create the Fly app once:
+
+```powershell
+fly apps create sam-climbing --org personal
+```
+
+Provide a PostgreSQL URL with pgvector enabled, then set secrets without committing them:
+
+```powershell
+fly secrets set `
+  TELEGRAM_BOT_TOKEN="..." `
+  TELEGRAM_ALLOWED_CHAT_ID="-100..." `
+  ALEXEY_TELEGRAM_USER_ID="..." `
+  ANDREY_TELEGRAM_USER_ID="..." `
+  OPENAI_API_KEY="..." `
+  DATABASE_URL="postgresql+asyncpg://..."
+```
+
+Deploy and verify:
+
+```powershell
+fly deploy
+fly status
+fly logs
+Invoke-RestMethod https://sam-climbing.fly.dev/health
+```
+
+Do not deploy with the default SQLite URL: a Fly Machine filesystem is ephemeral and Sam's memory
+would be lost when the Machine is replaced.
+
 ## How message processing works
 
 ```text
