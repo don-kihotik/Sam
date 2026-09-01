@@ -1,9 +1,9 @@
 # Sam
 
 Sam is a private Telegram climbing companion for 2–4 fixed users. This repository implements a
-usable first version: text and voice intake, durable raw history, structured workouts and recovery,
-natural-language corrections, semantic memory, an initial plan, personalized coaching, and a local
-product backlog.
+usable first version: text, voice and video intake, durable raw history, structured workouts and
+recovery, natural-language corrections, semantic memory, an initial plan, personalized coaching,
+and a local product backlog.
 
 The product source of truth is [SPEC.md](SPEC.md).
 
@@ -11,7 +11,8 @@ The product source of truth is [SPEC.md](SPEC.md).
 
 - one allowlisted Telegram group;
 - Telegram user ID → athlete mapping for Alexey and Andrey;
-- text and voice-note processing;
+- text, voice-note, Telegram video-note and regular video processing;
+- preliminary climbing-technique observations from evenly sampled video frames;
 - OpenAI structured extraction and separate coaching responses;
 - workouts, daily state, weight, facts, corrections and provenance;
 - raw messages, episodic/coach memories and pgvector retrieval;
@@ -22,11 +23,13 @@ The product source of truth is [SPEC.md](SPEC.md).
 - a processing audit trail without hidden chain-of-thought.
 
 Garmin screenshot extraction, advanced weekly analytics and GitHub Issue synchronization are not
-included yet.
+included yet. Video observations are intentionally cautious: Sam analyzes sampled frames, not
+continuous motion or exact biomechanics.
 
 ## Requirements
 
 - Docker Desktop with Docker Compose, or Python 3.12+ and PostgreSQL with pgvector;
+- `ffmpeg` when running locally without Docker (the Docker image installs it automatically);
 - a Telegram bot token from [@BotFather](https://t.me/BotFather);
 - an OpenAI API key.
 
@@ -62,6 +65,7 @@ EXTRACTION_MODEL=gpt-5.4-mini
 TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe
 EMBEDDING_MODEL=text-embedding-3-small
 EMBEDDING_DIMENSIONS=1536
+VIDEO_MAX_FRAMES=12
 ```
 
 The current database vector columns have 1536 dimensions. Keep `EMBEDDING_DIMENSIONS=1536` unless a
@@ -201,6 +205,19 @@ Later ask:
 
 Send the same training description as a Telegram voice note. The `messages` row should contain the
 raw transcript and transcription metadata; the corresponding workout should cite that message.
+
+### Video and Telegram video note
+
+Send a regular Telegram video with the caption:
+
+```text
+Сэм, посмотри технику. Где я здесь трачу лишние силы?
+```
+
+For a circular video note, send it first and then reply to it with the same request. Sam downloads
+the referenced video, transcribes any speech, extracts a configurable number of evenly spaced
+frames and gives cautious visual observations. He should explicitly distinguish visible evidence
+from hypotheses and must not claim precise joint loads, grip force or continuous motion analysis.
 
 ### Correction
 

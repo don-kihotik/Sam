@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     timezone: str = "America/Toronto"
     debug: bool = False
     recent_message_limit: int = Field(default=24, ge=5, le=100)
+    video_max_frames: int = Field(default=12, ge=4, le=24)
 
     @field_validator(
         "telegram_allowed_chat_id",

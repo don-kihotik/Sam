@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import base64
+import mimetypes
 from typing import Any
 
 from openai import AsyncOpenAI
 
 from app.config import Settings
-from app.prompts import EXTRACTION_SYSTEM_PROMPT, SAM_SYSTEM_PROMPT
+from app.prompts import EXTRACTION_SYSTEM_PROMPT, SAM_SYSTEM_PROMPT, VIDEO_ANALYSIS_SYSTEM_PROMPT
 from app.schemas import MessageExtraction
 
 
@@ -54,11 +56,56 @@ class AIService:
         return text
 
     async def transcribe(self, audio: bytes, *, filename: str = "voice.ogg") -> str:
+        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         result = await self.client.audio.transcriptions.create(
             model=self.settings.transcription_model,
-            file=(filename, audio, "audio/ogg"),
+            file=(filename, audio, content_type),
         )
         return result.text.strip()
+
+    async def analyze_video_frames(
+        self,
+        frames: list[bytes],
+        *,
+        caption: str = "",
+        transcript: str = "",
+        safety_identifier: str = "video",
+    ) -> str:
+        if not frames:
+            raise ValueError("At least one video frame is required")
+
+        context = [
+            "Ниже идут равномерно выбранные кадры в хронологическом порядке.",
+            f"Подпись пользователя: {caption or '[нет]'}",
+            f"Расшифровка звука: {transcript or '[нет или неразборчиво]'}",
+        ]
+        content: list[dict[str, Any]] = [
+            {"type": "input_text", "text": "\n".join(context)}
+        ]
+        for index, frame in enumerate(frames, start=1):
+            encoded = base64.b64encode(frame).decode("ascii")
+            content.extend(
+                [
+                    {"type": "input_text", "text": f"Кадр {index} из {len(frames)}"},
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:image/jpeg;base64,{encoded}",
+                        "detail": "high",
+                    },
+                ]
+            )
+
+        response = await self.client.responses.create(
+            model=self.settings.sam_model,
+            instructions=VIDEO_ANALYSIS_SYSTEM_PROMPT,
+            input=[{"role": "user", "content": content}],
+            store=False,
+            safety_identifier=safety_identifier[:64],
+        )
+        text = response.output_text.strip()
+        if not text:
+            raise RuntimeError("Video analysis model returned an empty response")
+        return text
 
     async def embed(self, text: str) -> list[float] | None:
         if not self.settings.embeddings_enabled or not text.strip():
@@ -88,6 +135,9 @@ class FakeAIService:
 
     async def transcribe(self, audio: bytes, *, filename: str = "voice.ogg") -> str:
         return "тестовая тренировка"
+
+    async def analyze_video_frames(self, frames: list[bytes], **_: Any) -> str:
+        return "На кадрах видно спокойное лазание; точная динамика между кадрами не видна."
 
     async def embed(self, text: str) -> None:
         return None
