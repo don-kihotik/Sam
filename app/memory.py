@@ -32,7 +32,12 @@ def _entry_text(workout: Workout) -> str:
     for entry in workout.entries:
         value = f"{entry.count}×{entry.original_grade or '?'}"
         if entry.completed_count is not None and entry.completed_count != entry.count:
-            value += f" ({entry.completed_count} завершено)"
+            if entry.completed_count == 0:
+                value += " (не пройдено)"
+            elif entry.completed_count == 1:
+                value += " (1 пройдено)"
+            else:
+                value += f" ({entry.completed_count} пройдено)"
         discipline = {
             "bouldering": "болдеринг",
             "auto_belay": "автостраховка",
@@ -76,6 +81,8 @@ async def render_history_audit(session: AsyncSession, *, athlete: Athlete, today
         details = workout.structured_details or {}
         if workout.date is None:
             label = details.get("date_label") or "дата неизвестна"
+            if label == "August 2026":
+                label = "август 2026"
             date_text = f"{label}, точный день неизвестен"
         else:
             date_text = workout.date.strftime("%d.%m.%Y")
