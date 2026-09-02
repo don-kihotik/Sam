@@ -15,6 +15,8 @@ The product source of truth is [SPEC.md](SPEC.md).
 - preliminary climbing-technique observations from evenly sampled video frames;
 - OpenAI structured extraction and separate coaching responses;
 - workouts, daily state, weight, facts, corrections and provenance;
+- normalized climbing entries, evidence-gated writes and duplicate-session protection;
+- deterministic 7/28/90-day analytics with daily historical snapshots;
 - raw messages, episodic/coach memories and pgvector retrieval;
 - Alexey's seeded profile, target trip and initial plan hypothesis;
 - an empty non-invented Andrey profile;
@@ -22,8 +24,7 @@ The product source of truth is [SPEC.md](SPEC.md).
 - idempotent handling of repeated Telegram updates;
 - a processing audit trail without hidden chain-of-thought.
 
-Garmin screenshot extraction, advanced weekly analytics and GitHub Issue synchronization are not
-included yet. Video observations are intentionally cautious: Sam analyzes sampled frames, not
+Garmin screenshot extraction and GitHub Issue synchronization are not included yet. Video observations are intentionally cautious: Sam analyzes sampled frames, not
 continuous motion or exact biomechanics.
 
 ## Requirements
@@ -161,6 +162,12 @@ allowlisted Telegram update
 
 OpenAI response state is not Sam's database. Every durable fact and every assistant response is
 stored locally in PostgreSQL. A failed embedding does not block saving a workout or replying.
+New durable facts must contain an exact evidence quote from the current user message; recent context
+cannot silently create another workout. Assistant replies are embedded too, and generated weekly
+plans are persisted as versioned plans.
+
+Workout counts, volume, grades, pain status and 7/28/90-day comparisons are calculated from canonical
+database rows. The language model receives those results but does not calculate or guess them.
 
 ## Acceptance checks in Telegram
 
@@ -264,6 +271,8 @@ Useful queries:
 select id, name, telegram_user_id from athletes;
 select id, athlete_id, direction, message_type, normalized_text from messages order by id desc limit 20;
 select id, athlete_id, date, type, structured_details from workouts order by id desc;
+select workout_id, discipline, original_grade, count, completed_count from workout_entries order by id;
+select athlete_id, period_end, window_days, metrics from analytics_snapshots order by period_end desc;
 select id, target_kind, target_id, status, payload from corrections order by id desc;
 select id, type, status, title from backlog_items order by id desc;
 select id, status, extracted, mutations, error from processing_runs order by id desc;
@@ -292,3 +301,33 @@ docker compose down -v
 ```
 
 Then run `docker compose up --build` to create a clean database and reseed the two profiles.
+
+## Fly database backups and recovery
+
+The production database is a single unmanaged Fly Postgres node. Volume snapshots protect against
+many disk and migration failures, but they are not high availability and are not a substitute for
+an off-platform SQL dump.
+
+Inspect and create snapshots:
+
+```powershell
+fly volumes snapshots list vol_vly9dojxd99pd184 --app sam-climbing-db
+fly volumes snapshots create vol_vly9dojxd99pd184 --app sam-climbing-db
+```
+
+Enable daily scheduled snapshots and retain 14 days:
+
+```powershell
+fly volumes update vol_vly9dojxd99pd184 --app sam-climbing-db --scheduled-snapshots --snapshot-retention 14
+```
+
+For recovery, stop the database machine, create a new volume from the selected snapshot with
+`fly volumes create --snapshot-id <snapshot-id>`, attach it to a replacement machine at
+`/var/lib/postgresql/data`, and verify row counts before starting Sam. Do not destroy the original
+volume until the restored database has passed the acceptance checks above.
+
+After a schema release, the idempotent repair command can be run inside the application machine:
+
+```powershell
+fly ssh console --app sam-climbing -C "python -m app.maintenance"
+```

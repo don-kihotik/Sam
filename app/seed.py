@@ -1,10 +1,13 @@
 from datetime import date
+from hashlib import sha256
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.analytics import grade_rank
 from app.config import Settings
-from app.db.models import Athlete, Event, Plan
+from app.db.models import Athlete, Event, Message, Plan, Workout, WorkoutEntry
+from app.maintenance import canonicalize_history
 
 ALEXEY_PROFILE = {
     "identity": {"name": "Alexey"},
@@ -26,7 +29,7 @@ ALEXEY_PROFILE = {
     "availability": {
         "preferred_climbing_days": ["Tuesday", "Thursday", "weekend"],
     },
-    "goals": ["Prepare physically for a guided multipitch trip in mid-October 2026"],
+    "goals": ["Prepare physically for a guided multipitch trip in late November 2026"],
     "learned_patterns": [
         {
             "statement": "Inside-corner routes may currently be more energy-efficient",
@@ -62,8 +65,14 @@ async def _upsert_athlete(
     if telegram_user_id is not None:
         athlete.telegram_user_id = telegram_user_id
     athlete.timezone = timezone_name
-    if name == "Alexey" and not athlete.profile:
-        athlete.profile = profile
+    if name == "Alexey":
+        existing_profile = dict(athlete.profile or profile)
+        goals = existing_profile.get("goals", [])
+        if not goals or any("October" in str(goal) for goal in goals):
+            existing_profile["goals"] = profile["goals"]
+        for key, value in profile.items():
+            existing_profile.setdefault(key, value)
+        athlete.profile = existing_profile
     return athlete
 
 
@@ -83,6 +92,27 @@ async def seed_initial_data(session: AsyncSession, settings: Settings) -> None:
         profile={"identity": {"name": "Andrey"}},
     )
 
+    event_source = await session.scalar(
+        select(Message)
+        .where(
+            Message.athlete_id == alexey.id,
+            Message.direction == "incoming",
+            Message.normalized_text.ilike("%конец ноября%"),
+        )
+        .order_by(Message.created_at.desc())
+        .limit(1)
+    )
+    plan_source = await session.scalar(
+        select(Message)
+        .where(
+            Message.athlete_id == alexey.id,
+            Message.direction == "outgoing",
+            Message.normalized_text.ilike("%На ближайшую неделю%"),
+        )
+        .order_by(Message.created_at.desc())
+        .limit(1)
+    )
+
     event = await session.scalar(
         select(Event).where(Event.athlete_id == alexey.id, Event.status == "active")
     )
@@ -91,33 +121,121 @@ async def seed_initial_data(session: AsyncSession, settings: Settings) -> None:
             Event(
                 athlete_id=alexey.id,
                 name="Guided multipitch climbing trip",
-                date=date(2026, 10, 15),
-                details={"date_is_approximate": True, "route_type": "multipitch", "guided": True},
+                date=None,
+                date_precision="approximate",
+                details={
+                    "date_label": "late November 2026",
+                    "route_type": "multipitch",
+                    "guided": True,
+                },
+                evidence=["где-то конец ноября"],
+                source_message_ids=[event_source.id] if event_source else [],
             )
         )
+    elif event.date == date(2026, 10, 15) and event.details.get("date_is_approximate"):
+        event.date = None
+        event.date_precision = "approximate"
+        event.details = {
+            "date_label": "late November 2026",
+            "route_type": "multipitch",
+            "guided": True,
+        }
+        event.evidence = ["где-то конец ноября"]
+        event.source_message_ids = [event_source.id] if event_source else []
 
     plan = await session.scalar(
         select(Plan).where(Plan.athlete_id == alexey.id, Plan.status == "active")
     )
+    initial_plan = {
+        "status": "initial hypothesis",
+        "summary": "Build comfortable climbing volume and mountain endurance for late November.",
+        "current_focus": [
+            "comfortable climbing volume",
+            "steady movement and technique",
+            "aerobic mountain conditioning",
+        ],
+        "weekly_schedule": {
+            "Monday": "rest or 30–60 minute walk",
+            "Tuesday": "easy-to-moderate climbing 60–90 minutes; mostly V1–V2 and some V3 without failure",
+            "Wednesday": "aerobic work 30–45 minutes plus mobility",
+            "Thursday": "climbing at a steady pace with technique focus; no hard projects",
+            "Friday": "rest",
+            "Saturday": "long wall or crag session at a comfortable pace",
+            "Sunday": "easy walk or recovery",
+        },
+        "preferred_climbing_days": ["Tuesday", "Thursday", "weekend"],
+        "guardrails": [
+            "avoid rapid finger-load progression after the long break",
+            "adapt daily to pain and recovery",
+        ],
+    }
     if plan is None:
         session.add(
             Plan(
                 athlete_id=alexey.id,
                 start_date=date(2026, 8, 30),
-                end_date=date(2026, 10, 15),
-                content={
-                    "status": "initial hypothesis",
-                    "current_focus": [
-                        "return to climbing movement",
-                        "build comfortable route volume",
-                        "aerobic mountain conditioning",
-                    ],
-                    "preferred_climbing_days": ["Tuesday", "Thursday", "weekend"],
-                    "guardrails": [
-                        "avoid rapid finger-load progression after the long break",
-                        "adapt daily to pain and recovery",
-                    ],
-                },
+                end_date=date(2026, 11, 30),
+                content=initial_plan,
+                evidence=["На ближайшую неделю я бы сделал так"],
+                source_message_ids=[plan_source.id] if plan_source else [],
             )
         )
+    elif plan.end_date == date(2026, 10, 15) and plan.content.get("status") == "initial hypothesis":
+        plan.end_date = date(2026, 11, 30)
+        plan.content = initial_plan
+        plan.evidence = ["На ближайшую неделю я бы сделал так"]
+        plan.source_message_ids = [plan_source.id] if plan_source else []
+
+    baseline_fingerprint = sha256(b"alexey-baseline-2026-08").hexdigest()
+    baseline = await session.scalar(
+        select(Workout).where(
+            Workout.athlete_id == alexey.id,
+            Workout.fingerprint == baseline_fingerprint,
+            Workout.status == "active",
+        )
+    )
+    if baseline is None:
+        baseline = Workout(
+            athlete_id=alexey.id,
+            date=None,
+            date_precision="month",
+            type="climbing",
+            duration_minutes=None,
+            rpe=None,
+            notes="Baseline session reported during initial product setup; exact date unknown.",
+            structured_details={
+                "pump": 6.5,
+                "pain": [],
+                "reserve": "meaningful",
+                "date_label": "August 2026",
+            },
+            pain_status="reported_none",
+            evidence=["baseline imported from the agreed athlete profile"],
+            fingerprint=baseline_fingerprint,
+            source_message_ids=[],
+        )
+        session.add(baseline)
+        await session.flush()
+        entries = [
+            ("bouldering", "V", "V1", 2, 2),
+            ("bouldering", "V", "V2", 3, 3),
+            ("bouldering", "V", "V3", 3, 2),
+            ("bouldering", "V", "V4", 1, 0),
+            ("auto_belay", "YDS", "5.8", 2, 2),
+            ("auto_belay", "YDS", "5.9", 6, 6),
+        ]
+        for discipline, system, original, count, completed in entries:
+            session.add(
+                WorkoutEntry(
+                    workout_id=baseline.id,
+                    discipline=discipline,
+                    grade_system=system,
+                    original_grade=original,
+                    grade_rank=grade_rank(system, original),
+                    count=count,
+                    completed_count=completed,
+                )
+            )
+    await session.flush()
+    await canonicalize_history(session)
     await session.commit()

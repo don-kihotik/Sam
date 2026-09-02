@@ -8,12 +8,13 @@ from openai import AsyncOpenAI
 
 from app.config import Settings
 from app.prompts import (
+    COACH_ARTIFACTS_SYSTEM_PROMPT,
     EXTRACTION_SYSTEM_PROMPT,
     SAM_SYSTEM_PROMPT,
     TRANSCRIPTION_PROMPT,
     VIDEO_ANALYSIS_SYSTEM_PROMPT,
 )
-from app.schemas import MessageExtraction
+from app.schemas import CoachArtifacts, MessageExtraction
 
 
 class AIService:
@@ -60,6 +61,18 @@ class AIService:
             raise RuntimeError("Coaching model returned an empty response")
         return text
 
+    async def extract_coach_artifacts(self, text: str) -> CoachArtifacts:
+        response = await self.client.responses.parse(
+            model=self.settings.extraction_model,
+            instructions=COACH_ARTIFACTS_SYSTEM_PROMPT,
+            input=text,
+            text_format=CoachArtifacts,
+            store=False,
+        )
+        if response.output_parsed is None:
+            raise RuntimeError("Coach artifact extraction returned no parsed result")
+        return response.output_parsed
+
     async def transcribe(self, audio: bytes, *, filename: str = "voice.ogg") -> str:
         content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         result = await self.client.audio.transcriptions.create(
@@ -85,9 +98,7 @@ class AIService:
             f"Подпись пользователя: {caption or '[нет]'}",
             f"Расшифровка звука: {transcript or '[нет или неразборчиво]'}",
         ]
-        content: list[dict[str, Any]] = [
-            {"type": "input_text", "text": "\n".join(context)}
-        ]
+        content: list[dict[str, Any]] = [{"type": "input_text", "text": "\n".join(context)}]
         for index, frame in enumerate(frames, start=1):
             encoded = base64.b64encode(frame).decode("ascii")
             content.extend(
@@ -138,6 +149,9 @@ class FakeAIService:
     async def coach(self, *, context: str, safety_identifier: str) -> str:
         self.coach_contexts.append(context)
         return self.reply
+
+    async def extract_coach_artifacts(self, text: str) -> CoachArtifacts:
+        return CoachArtifacts()
 
     async def transcribe(self, audio: bytes, *, filename: str = "voice.ogg") -> str:
         return "тестовая тренировка"

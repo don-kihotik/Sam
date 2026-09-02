@@ -50,12 +50,14 @@ async def test_workout_memory_and_reply_are_personalized(database, settings):
                     completed=True,
                 )
             ],
+            evidence=["сегодня сделал три 5.9"],
         ),
         memory=MemoryCandidate(
             create=True,
             kind="episodic",
             summary="Alexey completed three 5.9 auto-belay routes with pump 6/10.",
             tags=["climbing", "pump"],
+            evidence=["сегодня сделал три 5.9"],
         ),
     )
     ai = FakeAIService(extraction, reply="Норм. Записал три 5.9, забитость 6/10.")
@@ -66,7 +68,7 @@ async def test_workout_memory_and_reply_are_personalized(database, settings):
             session,
             incoming(1, 101, "Сэм, сегодня сделал три 5.9, забитость на шесть"),
         )
-        workout = await session.scalar(select(Workout))
+        workout = await session.scalar(select(Workout).where(Workout.date == date(2026, 8, 30)))
 
     assert result.reply == "Норм. Записал три 5.9, забитость 6/10."
     assert result.athlete_id is not None
@@ -128,7 +130,12 @@ async def test_explicit_backlog_creation(database, settings):
 async def test_correction_can_reassign_workout(database, settings):
     initial = MessageExtraction(
         normalized_text="Сегодня была тренировка.",
-        workout=WorkoutCandidate(present=True, date=date(2026, 8, 30), workout_type="climbing"),
+        workout=WorkoutCandidate(
+            present=True,
+            date=date(2026, 8, 30),
+            workout_type="climbing",
+            evidence=["Сегодня полазил"],
+        ),
     )
     async with database.sessions() as session:
         await MessageProcessor(settings, FakeAIService(initial)).process(
@@ -149,7 +156,7 @@ async def test_correction_can_reassign_workout(database, settings):
         await MessageProcessor(settings, FakeAIService(correction)).process(
             session, incoming(11, 101, "Нет, это Андрей лазил")
         )
-        workout = await session.scalar(select(Workout))
+        workout = await session.scalar(select(Workout).where(Workout.date == date(2026, 8, 30)))
         andrey = await session.scalar(select(Athlete).where(Athlete.name == "Andrey"))
         audit = await session.scalar(select(Correction))
     assert workout is not None and andrey is not None
@@ -161,7 +168,9 @@ async def test_non_addressed_message_can_be_silently_learned(database, settings)
     extraction = MessageExtraction(
         normalized_text="Плохо спал, энергии 4/10.",
         should_respond=False,
-        daily_state=DailyStateCandidate(present=True, energy=4, sleep_quality=3),
+        daily_state=DailyStateCandidate(
+            present=True, energy=4, sleep_quality=3, evidence=["Плохо спал сегодня"]
+        ),
     )
     processor = MessageProcessor(settings, FakeAIService(extraction))
     async with database.sessions() as session:

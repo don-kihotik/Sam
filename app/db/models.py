@@ -76,18 +76,47 @@ class Workout(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), index=True)
-    date: Mapped[date] = mapped_column(Date, index=True)
+    date: Mapped[date | None] = mapped_column(Date, index=True, nullable=True)
+    date_precision: Mapped[str] = mapped_column(String(20), default="exact")
     type: Mapped[str] = mapped_column(String(40))
     duration_minutes: Mapped[int | None] = mapped_column(Integer)
     rpe: Mapped[float | None] = mapped_column(Float)
     notes: Mapped[str | None] = mapped_column(Text)
     structured_details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    pain_status: Mapped[str] = mapped_column(String(24), default="unknown")
+    evidence: Mapped[list[str]] = mapped_column(JSON, default=list)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     source_message_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(20), default="active")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+    entries: Mapped[list[WorkoutEntry]] = relationship(
+        back_populates="workout", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+
+class WorkoutEntry(Base):
+    __tablename__ = "workout_entries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    workout_id: Mapped[int] = mapped_column(
+        ForeignKey("workouts.id", ondelete="CASCADE"), index=True
+    )
+    discipline: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    grade_system: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    original_grade: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    grade_rank: Mapped[float | None] = mapped_column(Float, nullable=True)
+    count: Mapped[int] = mapped_column(Integer, default=1)
+    completed_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    attempts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    wall_style: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    movement_style: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    workout: Mapped[Workout] = relationship(back_populates="entries")
 
 
 class DailyState(Base):
@@ -159,6 +188,7 @@ class Plan(Base):
     start_date: Mapped[date] = mapped_column(Date)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     content: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    evidence: Mapped[list[str]] = mapped_column(JSON, default=list)
     source_message_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -173,9 +203,30 @@ class Event(Base):
     athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), index=True)
     name: Mapped[str] = mapped_column(String(200))
     date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    date_precision: Mapped[str] = mapped_column(String(20), default="exact")
     details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    evidence: Mapped[list[str]] = mapped_column(JSON, default=list)
+    source_message_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(20), default="active")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class AnalyticsSnapshot(Base):
+    __tablename__ = "analytics_snapshots"
+    __table_args__ = (UniqueConstraint("athlete_id", "period_end", "window_days"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), index=True)
+    period_end: Mapped[date] = mapped_column(Date, index=True)
+    window_days: Mapped[int] = mapped_column(Integer)
+    metrics: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
 
 
 class BacklogItem(Base):

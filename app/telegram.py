@@ -68,8 +68,7 @@ def compose_video_context(*, request: str, transcript: str | None, analysis: str
     if transcript:
         parts.append(f"Расшифровка звука из видео:\n{transcript}")
     parts.append(
-        "Автоматические наблюдения по выбранным кадрам, а не по непрерывному видео:\n"
-        f"{analysis}"
+        f"Автоматические наблюдения по выбранным кадрам, а не по непрерывному видео:\n{analysis}"
     )
     return "\n\n".join(parts)
 

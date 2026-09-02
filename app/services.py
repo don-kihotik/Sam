@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from hashlib import sha256
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -11,6 +13,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import AIService
+from app.analytics import grade_rank, refresh_analytics_snapshots
 from app.config import Settings
 from app.db.models import (
     Athlete,
@@ -18,15 +21,19 @@ from app.db.models import (
     BodyMeasurement,
     Correction,
     DailyState,
+    Event,
     Fact,
     Memory,
     Message,
+    Plan,
     ProcessingRun,
     Workout,
+    WorkoutEntry,
 )
+from app.maintenance import fingerprint_existing
 from app.memory import ContextBuilder, recent_message_text, semantic_history
 from app.prompts import PROMPT_VERSION
-from app.schemas import CorrectionCandidate, MessageExtraction
+from app.schemas import CorrectionCandidate, MessageExtraction, PlanCandidate
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +151,55 @@ def remove_inferred_numeric_ratings(text: str, extraction: MessageExtraction) ->
     return removed
 
 
+def _normalized_evidence(value: str) -> str:
+    return " ".join(value.casefold().split()).strip(" .,!?:;—–-\"'«»")
+
+
+def valid_evidence(text: str, evidence: list[str]) -> list[str]:
+    source = _normalized_evidence(text)
+    return [quote for quote in evidence if quote and _normalized_evidence(quote) in source]
+
+
+def _workout_fingerprint(athlete_id: int, workout_date: date, workout: Any) -> str:
+    def normalized_discipline(entry: Any) -> str | None:
+        discipline = (entry.discipline or "").casefold().replace(" ", "_")
+        wall_style = (entry.wall_style or "").casefold().replace(" ", "_")
+        if "auto" in discipline or "auto" in wall_style:
+            return "auto_belay"
+        if "rope" in discipline:
+            return "roped_climbing"
+        if "boulder" in discipline:
+            return "bouldering"
+        return discipline or None
+
+    climbing = sorted(
+        (
+            normalized_discipline(entry),
+            entry.grade_system
+            or ("V" if (entry.original_grade or "").upper().startswith("V") else None),
+            entry.original_grade,
+            entry.count,
+            entry.attempts,
+        )
+        for entry in workout.climbing
+    )
+    payload = {
+        "athlete": athlete_id,
+        "date": workout_date.isoformat(),
+        "duration": workout.duration_minutes,
+        "rpe": workout.rpe,
+        "pump": workout.pump,
+        "climbing": climbing,
+    }
+    return sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+def _looks_like_plan(text: str) -> bool:
+    lowered = text.casefold()
+    day_hits = sum(day in lowered for day in ("пн", "вт", "ср", "чт", "пт", "сб", "вс"))
+    return day_hits >= 3 or ("план" in lowered and len(text) >= 180)
+
+
 class MessageProcessor:
     def __init__(
         self, settings: Settings, ai: AIService, context_builder: ContextBuilder | None = None
@@ -217,7 +273,12 @@ class MessageProcessor:
             message.normalized_text = extraction.normalized_text
             run.extracted = extraction.model_dump(mode="json")
             mutations = await self._apply_extraction(
-                session, athlete=athlete, message=message, extraction=extraction, today=local_today
+                session,
+                athlete=athlete,
+                message=message,
+                extraction=extraction,
+                today=local_today,
+                source_text=incoming.text,
             )
             try:
                 message.embedding = await self.ai.embed(extraction.normalized_text)
@@ -235,6 +296,7 @@ class MessageProcessor:
                     session,
                     athlete_id=athlete.id,
                     query_embedding=query_embedding,
+                    exclude_message_id=message.id,
                 )
                 context = await self.context_builder.build(
                     session,
@@ -242,13 +304,20 @@ class MessageProcessor:
                     today=local_today,
                     current_message=incoming.text,
                     semantic_matches=matches,
-                    extraction_summary=extraction.model_dump_json(exclude_none=True),
+                    extraction_summary=json.dumps(
+                        {
+                            "candidate": extraction.model_dump(mode="json", exclude_none=True),
+                            "mutation_results": mutations,
+                        },
+                        ensure_ascii=False,
+                    ),
                 )
                 reply = await self.ai.coach(
                     context=context,
                     safety_identifier=f"telegram-{athlete.id}",
                 )
             run.mutations = mutations
+            await refresh_analytics_snapshots(session, athlete.id, local_today)
             run.status = "completed"
             await session.commit()
             return ProcessResult(
@@ -290,6 +359,26 @@ class MessageProcessor:
             telegram_timestamp=timestamp or datetime.now(UTC),
         )
         session.add(message)
+        try:
+            message.embedding = await self.ai.embed(text)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Embedding failed for outgoing message: %s", exc)
+        await session.flush()
+        if _looks_like_plan(text):
+            try:
+                artifacts = await self.ai.extract_coach_artifacts(text)
+                evidence = valid_evidence(text, artifacts.plan.evidence)
+                if artifacts.plan.action != "none" and evidence:
+                    await self._upsert_plan(
+                        session,
+                        athlete_id=athlete_id,
+                        candidate=artifacts.plan,
+                        source_message_id=message.id,
+                        evidence=evidence,
+                        today=(timestamp or datetime.now(UTC)).date(),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not persist outgoing plan: %s", exc)
         await session.commit()
         return message
 
@@ -301,42 +390,90 @@ class MessageProcessor:
         message: Message,
         extraction: MessageExtraction,
         today: date,
+        source_text: str,
     ) -> list[dict[str, Any]]:
         mutations: list[dict[str, Any]] = []
         workout = extraction.workout
-        if workout.present:
+        workout_evidence = valid_evidence(source_text, workout.evidence)
+        if workout.present and workout_evidence:
             workout_date = workout.date or today
-            record = Workout(
-                athlete_id=athlete.id,
-                date=workout_date,
-                type=workout.workout_type or "other",
-                duration_minutes=workout.duration_minutes,
-                rpe=workout.rpe,
-                notes=workout.notes,
-                structured_details={
-                    "pump": workout.pump,
-                    "pain": workout.pain,
-                    "climbing": [x.model_dump(exclude_none=True) for x in workout.climbing],
-                    "confidence": workout.confidence,
-                    "date_inferred": workout.date_inferred,
-                },
-                source_message_ids=[message.id],
+            fingerprint = _workout_fingerprint(athlete.id, workout_date, workout)
+            record = await session.scalar(
+                select(Workout).where(
+                    Workout.athlete_id == athlete.id,
+                    Workout.fingerprint == fingerprint,
+                    Workout.status == "active",
+                )
             )
-            session.add(record)
-            await session.flush()
-            mutations.append({"kind": "workout", "id": record.id})
-            await self._save_fact(
-                session,
-                athlete.id,
-                message.id,
-                "workout",
-                {"id": record.id, "date": workout_date.isoformat(), "type": record.type},
-                workout.date_inferred,
-                workout.confidence,
-            )
+            if record is None:
+                created = True
+                pain_status = workout.pain_status
+                if workout.pain:
+                    pain_status = "reported"
+                record = Workout(
+                    athlete_id=athlete.id,
+                    date=workout_date,
+                    date_precision=workout.date_precision,
+                    type=workout.workout_type or "other",
+                    duration_minutes=workout.duration_minutes,
+                    rpe=workout.rpe,
+                    notes=workout.notes,
+                    structured_details={
+                        "pump": workout.pump,
+                        "pain": [x.model_dump() for x in workout.pain],
+                        "climbing": [x.model_dump(exclude_none=True) for x in workout.climbing],
+                        "confidence": workout.confidence,
+                        "date_inferred": workout.date_inferred,
+                    },
+                    pain_status=pain_status,
+                    evidence=workout_evidence,
+                    fingerprint=fingerprint,
+                    source_message_ids=[message.id],
+                )
+                session.add(record)
+                await session.flush()
+                for entry in workout.climbing:
+                    session.add(
+                        WorkoutEntry(
+                            workout_id=record.id,
+                            discipline=entry.discipline,
+                            grade_system=entry.grade_system,
+                            original_grade=entry.original_grade,
+                            grade_rank=grade_rank(entry.grade_system, entry.original_grade),
+                            count=entry.count,
+                            completed_count=(entry.count if entry.completed is True else 0)
+                            if entry.completed is not None
+                            else None,
+                            attempts=entry.attempts,
+                            wall_style=entry.wall_style,
+                            movement_style=entry.movement_style,
+                            notes=entry.notes,
+                        )
+                    )
+                mutations.append({"kind": "workout", "id": record.id, "status": "created"})
+            else:
+                created = False
+                record.source_message_ids = list(
+                    dict.fromkeys([*record.source_message_ids, message.id])
+                )
+                record.evidence = list(dict.fromkeys([*record.evidence, *workout_evidence]))
+                mutations.append({"kind": "workout", "id": record.id, "status": "duplicate_merged"})
+            if created:
+                await self._save_fact(
+                    session,
+                    athlete.id,
+                    message.id,
+                    "workout",
+                    {"id": record.id, "date": workout_date.isoformat(), "type": record.type},
+                    workout.date_inferred,
+                    workout.confidence,
+                )
+        elif workout.present:
+            mutations.append({"kind": "workout", "status": "rejected_no_current_evidence"})
 
         state = extraction.daily_state
-        if state.present:
+        state_evidence = valid_evidence(source_text, state.evidence)
+        if state.present and state_evidence:
             state_date = state.date or today
             values = state.model_dump(exclude={"present", "date", "confidence"}, exclude_none=True)
             record = await session.scalar(
@@ -357,8 +494,12 @@ class MessageProcessor:
                 record.source_message_ids = [*record.source_message_ids, message.id]
             await session.flush()
             mutations.append({"kind": "daily_state", "id": record.id})
+        elif state.present:
+            mutations.append({"kind": "daily_state", "status": "rejected_no_current_evidence"})
 
-        if extraction.weight_kg is not None:
+        if extraction.weight_kg is not None and valid_evidence(
+            source_text, extraction.weight_evidence
+        ):
             measurement = BodyMeasurement(
                 athlete_id=athlete.id,
                 date=today,
@@ -368,6 +509,8 @@ class MessageProcessor:
             session.add(measurement)
             await session.flush()
             mutations.append({"kind": "weight", "id": measurement.id})
+        elif extraction.weight_kg is not None:
+            mutations.append({"kind": "weight", "status": "rejected_no_current_evidence"})
 
         for candidate in extraction.corrections:
             correction = await self._apply_correction(session, athlete, message, candidate, today)
@@ -389,7 +532,8 @@ class MessageProcessor:
             mutations.append({"kind": "backlog", "id": item.id})
 
         memory = extraction.memory
-        if memory.create and memory.summary:
+        memory_evidence = valid_evidence(source_text, memory.evidence)
+        if memory.create and memory.summary and memory_evidence:
             record = Memory(
                 athlete_id=athlete.id,
                 date=today,
@@ -408,9 +552,98 @@ class MessageProcessor:
             session.add(record)
             await session.flush()
             mutations.append({"kind": "memory", "id": record.id})
+        elif memory.create:
+            mutations.append({"kind": "memory", "status": "rejected_no_current_evidence"})
+
+        event = extraction.event
+        event_evidence = valid_evidence(source_text, event.evidence)
+        if event.action != "none" and event_evidence:
+            active_events = (
+                await session.scalars(
+                    select(Event).where(Event.athlete_id == athlete.id, Event.status == "active")
+                )
+            ).all()
+            for active in active_events:
+                active.status = "superseded"
+            record = Event(
+                athlete_id=athlete.id,
+                name=event.name or (active_events[0].name if active_events else "Climbing goal"),
+                date=event.date,
+                date_precision=event.date_precision,
+                details={
+                    "date_label": event.date_label,
+                    "route_type": event.route_type,
+                    "guided": event.guided,
+                },
+                evidence=event_evidence,
+                source_message_ids=[message.id],
+            )
+            session.add(record)
+            profile = dict(athlete.profile)
+            profile["goals"] = [
+                f"{record.name}: {event.date_label or (event.date.isoformat() if event.date else 'date unknown')}"
+            ]
+            athlete.profile = profile
+            await session.flush()
+            mutations.append({"kind": "event", "id": record.id})
+        elif event.action != "none":
+            mutations.append({"kind": "event", "status": "rejected_no_current_evidence"})
+
+        plan = extraction.plan
+        plan_evidence = valid_evidence(source_text, plan.evidence)
+        if plan.action != "none" and plan_evidence:
+            record = await self._upsert_plan(
+                session,
+                athlete_id=athlete.id,
+                candidate=plan,
+                source_message_id=message.id,
+                evidence=plan_evidence,
+                today=today,
+            )
+            mutations.append({"kind": "plan", "id": record.id})
+        elif plan.action != "none":
+            mutations.append({"kind": "plan", "status": "rejected_no_current_evidence"})
 
         await session.flush()
         return mutations
+
+    async def _upsert_plan(
+        self,
+        session: AsyncSession,
+        *,
+        athlete_id: int,
+        candidate: PlanCandidate,
+        source_message_id: int,
+        evidence: list[str],
+        today: date,
+    ) -> Plan:
+        current = await session.scalar(
+            select(Plan)
+            .where(Plan.athlete_id == athlete_id, Plan.status == "active")
+            .order_by(desc(Plan.created_at))
+            .limit(1)
+        )
+        content = {
+            "summary": candidate.summary,
+            "current_focus": candidate.focus,
+            "weekly_schedule": candidate.weekly_schedule,
+            "guardrails": candidate.guardrails,
+        }
+        if current is not None:
+            current.status = "superseded"
+            content = {**current.content, **{key: value for key, value in content.items() if value}}
+        record = Plan(
+            athlete_id=athlete_id,
+            status="active",
+            start_date=candidate.start_date or today,
+            end_date=candidate.end_date or (current.end_date if current else None),
+            content=content,
+            evidence=evidence,
+            source_message_ids=[source_message_id],
+        )
+        session.add(record)
+        await session.flush()
+        return record
 
     async def _save_fact(
         self,
@@ -484,11 +717,21 @@ class MessageProcessor:
                                 break
                         details["climbing"] = climbing
                         workout.structured_details = details
+                        for entry in reversed(workout.entries):
+                            if candidate.old_value is None or entry.original_grade == str(
+                                candidate.old_value
+                            ):
+                                entry.original_grade = str(candidate.new_value)
+                                entry.grade_rank = grade_rank(
+                                    entry.grade_system, entry.original_grade
+                                )
+                                break
                     else:
                         workout.structured_details = {
                             **workout.structured_details,
                             candidate.field: candidate.new_value,
                         }
+                workout.fingerprint = fingerprint_existing(workout)
                 correction.target_id = workout.id
                 correction.status = "applied"
         elif candidate.target_kind == "daily_state":
