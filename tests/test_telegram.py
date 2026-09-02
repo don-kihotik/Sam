@@ -1,4 +1,6 @@
-from app.telegram import compose_video_context, format_telegram_reply
+from aiogram.enums import ChatType
+
+from app.telegram import compose_video_context, format_telegram_reply, is_allowed_chat
 
 
 def test_whoami_command_normalization():
@@ -29,3 +31,30 @@ def test_compose_video_context_labels_sampled_frames_honestly():
     assert "Расшифровка звука" in result
     assert "не по непрерывному видео" in result
     assert "корпус далеко от стены" in result
+
+
+def test_registered_athlete_can_use_private_chat(settings):
+    assert is_allowed_chat(
+        settings,
+        chat_id=101,
+        chat_type=ChatType.PRIVATE,
+        user_id=101,
+    )
+
+
+def test_unknown_user_cannot_use_private_chat(settings):
+    assert not is_allowed_chat(
+        settings,
+        chat_id=999,
+        chat_type=ChatType.PRIVATE,
+        user_id=999,
+    )
+
+
+def test_configured_group_remains_allowed(settings):
+    assert is_allowed_chat(
+        settings,
+        chat_id=-100123,
+        chat_type=ChatType.SUPERGROUP,
+        user_id=999,
+    )

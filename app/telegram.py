@@ -7,7 +7,7 @@ import re
 from io import BytesIO
 
 from aiogram import Bot, Dispatcher, Router
-from aiogram.enums import ParseMode
+from aiogram.enums import ChatType, ParseMode
 from aiogram.types import Message as TelegramMessage
 from aiogram.types import Video, VideoNote
 
@@ -20,6 +20,30 @@ from app.video import extract_video_frames
 logger = logging.getLogger(__name__)
 
 _BOLD_PATTERN = re.compile(r"\*\*([^*\n]+)\*\*")
+
+
+def known_user_ids(settings: Settings) -> set[int]:
+    return {
+        user_id
+        for user_id in (
+            settings.alexey_telegram_user_id,
+            settings.andrey_telegram_user_id,
+        )
+        if user_id is not None
+    }
+
+
+def is_allowed_chat(
+    settings: Settings,
+    *,
+    chat_id: int,
+    chat_type: ChatType,
+    user_id: int,
+) -> bool:
+    """Allow the shared group and private chats with registered athletes only."""
+    if chat_id == settings.telegram_allowed_chat_id:
+        return True
+    return chat_type == ChatType.PRIVATE and user_id in known_user_ids(settings)
 
 
 def format_telegram_reply(text: str) -> str:
@@ -79,10 +103,15 @@ class TelegramRuntime:
         await self.bot.session.close()
 
     async def _handle_message(self, message: TelegramMessage) -> None:
-        if message.chat.id != self.settings.telegram_allowed_chat_id:
-            logger.warning("Ignoring update from non-allowlisted chat %s", message.chat.id)
-            return
         if message.from_user is None or message.from_user.is_bot:
+            return
+        if not is_allowed_chat(
+            self.settings,
+            chat_id=message.chat.id,
+            chat_type=message.chat.type,
+            user_id=message.from_user.id,
+        ):
+            logger.warning("Ignoring update from non-allowlisted chat %s", message.chat.id)
             return
         video, video_message = find_video(message)
         if not (message.text or message.caption or message.voice or video):
@@ -120,15 +149,7 @@ class TelegramRuntime:
                 return
 
         if video:
-            known_user_ids = {
-                user_id
-                for user_id in (
-                    self.settings.alexey_telegram_user_id,
-                    self.settings.andrey_telegram_user_id,
-                )
-                if user_id is not None
-            }
-            if message.from_user.id not in known_user_ids:
+            if message.from_user.id not in known_user_ids(self.settings):
                 return
 
             message_type = "video_note" if video_message.video_note else "video"
