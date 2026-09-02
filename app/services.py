@@ -429,13 +429,8 @@ class MessageProcessor:
                     evidence=workout_evidence,
                     fingerprint=fingerprint,
                     source_message_ids=[message.id],
-                )
-                session.add(record)
-                await session.flush()
-                for entry in workout.climbing:
-                    session.add(
+                    entries=[
                         WorkoutEntry(
-                            workout_id=record.id,
                             discipline=entry.discipline,
                             grade_system=entry.grade_system,
                             original_grade=entry.original_grade,
@@ -449,7 +444,11 @@ class MessageProcessor:
                             movement_style=entry.movement_style,
                             notes=entry.notes,
                         )
-                    )
+                        for entry in workout.climbing
+                    ],
+                )
+                session.add(record)
+                await session.flush()
                 mutations.append({"kind": "workout", "id": record.id, "status": "created"})
             else:
                 created = False

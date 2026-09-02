@@ -195,6 +195,14 @@ async def seed_initial_data(session: AsyncSession, settings: Settings) -> None:
         )
     )
     if baseline is None:
+        entries = [
+            ("bouldering", "V", "V1", 2, 2),
+            ("bouldering", "V", "V2", 3, 3),
+            ("bouldering", "V", "V3", 3, 2),
+            ("bouldering", "V", "V4", 1, 0),
+            ("auto_belay", "YDS", "5.8", 2, 2),
+            ("auto_belay", "YDS", "5.9", 6, 6),
+        ]
         baseline = Workout(
             athlete_id=alexey.id,
             date=None,
@@ -213,21 +221,8 @@ async def seed_initial_data(session: AsyncSession, settings: Settings) -> None:
             evidence=["baseline imported from the agreed athlete profile"],
             fingerprint=baseline_fingerprint,
             source_message_ids=[],
-        )
-        session.add(baseline)
-        await session.flush()
-        entries = [
-            ("bouldering", "V", "V1", 2, 2),
-            ("bouldering", "V", "V2", 3, 3),
-            ("bouldering", "V", "V3", 3, 2),
-            ("bouldering", "V", "V4", 1, 0),
-            ("auto_belay", "YDS", "5.8", 2, 2),
-            ("auto_belay", "YDS", "5.9", 6, 6),
-        ]
-        for discipline, system, original, count, completed in entries:
-            session.add(
+            entries=[
                 WorkoutEntry(
-                    workout_id=baseline.id,
                     discipline=discipline,
                     grade_system=system,
                     original_grade=original,
@@ -235,7 +230,10 @@ async def seed_initial_data(session: AsyncSession, settings: Settings) -> None:
                     count=count,
                     completed_count=completed,
                 )
-            )
+                for discipline, system, original, count, completed in entries
+            ],
+        )
+        session.add(baseline)
     await session.flush()
     await canonicalize_history(session)
     await session.commit()

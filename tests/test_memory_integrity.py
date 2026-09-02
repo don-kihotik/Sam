@@ -5,7 +5,7 @@ from sqlalchemy.orm import selectinload
 
 from app.ai import FakeAIService
 from app.analytics import analytics_windows
-from app.db.models import Athlete, Event, Message, Plan, Workout
+from app.db.models import AnalyticsSnapshot, Athlete, Event, Message, Plan, Workout
 from app.memory import ContextBuilder, semantic_history
 from app.schemas import (
     ClimbingEntry,
@@ -85,6 +85,13 @@ async def test_analytics_are_calculated_from_normalized_entries(database, settin
             settings, FakeAIService(september_workout(["Сегодня лазил 45 минут"]))
         ).process(session, incoming(102, text))
         metrics = await analytics_windows(session, 1, date(2026, 9, 1))
+        snapshot = await session.scalar(
+            select(AnalyticsSnapshot).where(
+                AnalyticsSnapshot.athlete_id == 1,
+                AnalyticsSnapshot.period_end == date(2026, 9, 1),
+                AnalyticsSnapshot.window_days == 7,
+            )
+        )
 
     assert metrics["7"]["sessions"] == 1
     assert metrics["7"]["duration_minutes"] == 45
@@ -92,6 +99,7 @@ async def test_analytics_are_calculated_from_normalized_entries(database, settin
     assert metrics["7"]["pain_unknown_sessions"] == 1
     assert metrics["7"]["pain_free_sessions"] == 0
     assert metrics["all_time"]["sessions"] == 2
+    assert snapshot is not None and snapshot.metrics["total_climbs"] == 12
 
 
 async def test_explicit_event_move_supersedes_old_target(database, settings):

@@ -78,9 +78,8 @@ async def canonicalize_history(session: AsyncSession) -> dict[str, int]:
         if not workout.entries:
             for item in details.get("climbing", []):
                 completed = item.get("completed")
-                session.add(
+                workout.entries.append(
                     WorkoutEntry(
-                        workout_id=workout.id,
                         discipline=item.get("discipline"),
                         grade_system=item.get("grade_system"),
                         original_grade=item.get("original_grade"),
