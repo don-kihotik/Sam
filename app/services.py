@@ -31,7 +31,13 @@ from app.db.models import (
     WorkoutEntry,
 )
 from app.maintenance import fingerprint_existing
-from app.memory import ContextBuilder, recent_message_text, semantic_history
+from app.memory import (
+    ContextBuilder,
+    is_history_audit_request,
+    recent_message_text,
+    render_history_audit,
+    semantic_history,
+)
 from app.prompts import PROMPT_VERSION
 from app.schemas import CorrectionCandidate, MessageExtraction, PlanCandidate
 
@@ -291,31 +297,34 @@ class MessageProcessor:
             )
             reply = None
             if should_reply:
-                query_embedding = message.embedding
-                matches = await semantic_history(
-                    session,
-                    athlete_id=athlete.id,
-                    query_embedding=query_embedding,
-                    exclude_message_id=message.id,
-                )
-                context = await self.context_builder.build(
-                    session,
-                    athlete=athlete,
-                    today=local_today,
-                    current_message=incoming.text,
-                    semantic_matches=matches,
-                    extraction_summary=json.dumps(
-                        {
-                            "candidate": extraction.model_dump(mode="json", exclude_none=True),
-                            "mutation_results": mutations,
-                        },
-                        ensure_ascii=False,
-                    ),
-                )
-                reply = await self.ai.coach(
-                    context=context,
-                    safety_identifier=f"telegram-{athlete.id}",
-                )
+                if is_history_audit_request(incoming.text):
+                    reply = await render_history_audit(session, athlete=athlete, today=local_today)
+                else:
+                    query_embedding = message.embedding
+                    matches = await semantic_history(
+                        session,
+                        athlete_id=athlete.id,
+                        query_embedding=query_embedding,
+                        exclude_message_id=message.id,
+                    )
+                    context = await self.context_builder.build(
+                        session,
+                        athlete=athlete,
+                        today=local_today,
+                        current_message=incoming.text,
+                        semantic_matches=matches,
+                        extraction_summary=json.dumps(
+                            {
+                                "candidate": extraction.model_dump(mode="json", exclude_none=True),
+                                "mutation_results": mutations,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                    reply = await self.ai.coach(
+                        context=context,
+                        safety_identifier=f"telegram-{athlete.id}",
+                    )
             run.mutations = mutations
             await refresh_analytics_snapshots(session, athlete.id, local_today)
             run.status = "completed"

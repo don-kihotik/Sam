@@ -12,6 +12,113 @@ from app.analytics import analytics_windows
 from app.db.models import Athlete, BacklogItem, DailyState, Event, Memory, Message, Plan, Workout
 
 
+def is_history_audit_request(text: str) -> bool:
+    lowered = text.casefold()
+    return any(
+        marker in lowered
+        for marker in (
+            "проверь память",
+            "проверить память",
+            "сколько раз я лазил",
+            "сколько у меня трениров",
+            "все мои трениров",
+            "история трениров",
+        )
+    )
+
+
+def _entry_text(workout: Workout) -> str:
+    parts = []
+    for entry in workout.entries:
+        value = f"{entry.count}×{entry.original_grade or '?'}"
+        if entry.completed_count is not None and entry.completed_count != entry.count:
+            value += f" ({entry.completed_count} завершено)"
+        discipline = {
+            "bouldering": "болдеринг",
+            "auto_belay": "автостраховка",
+            "roped_climbing": "верёвка",
+        }.get(entry.discipline or "", entry.discipline or "тип не указан")
+        parts.append(f"{value}, {discipline}")
+    return "; ".join(parts) or "результаты по грейдам не записаны"
+
+
+async def render_history_audit(session: AsyncSession, *, athlete: Athlete, today: date) -> str:
+    workouts = (
+        await session.scalars(
+            select(Workout)
+            .options(selectinload(Workout.entries))
+            .where(Workout.athlete_id == athlete.id, Workout.status == "active")
+            .order_by(Workout.date.asc().nullsfirst(), Workout.created_at)
+        )
+    ).all()
+    plan = await session.scalar(
+        select(Plan)
+        .where(Plan.athlete_id == athlete.id, Plan.status == "active")
+        .order_by(desc(Plan.created_at))
+        .limit(1)
+    )
+    event = await session.scalar(
+        select(Event)
+        .where(Event.athlete_id == athlete.id, Event.status == "active")
+        .order_by(Event.date.asc().nullslast(), desc(Event.created_at))
+        .limit(1)
+    )
+    analytics = await analytics_windows(session, athlete.id, today)
+    count = len(workouts)
+    if count % 100 in (11, 12, 13, 14) or count % 10 not in (1, 2, 3, 4):
+        suffix = "тренировок"
+    elif count % 10 == 1:
+        suffix = "тренировка"
+    else:
+        suffix = "тренировки"
+    lines = [f"В базе {count} {suffix}:"]
+    for workout in workouts:
+        details = workout.structured_details or {}
+        if workout.date is None:
+            label = details.get("date_label") or "дата неизвестна"
+            date_text = f"{label}, точный день неизвестен"
+        else:
+            date_text = workout.date.strftime("%d.%m.%Y")
+        facts = [_entry_text(workout)]
+        if workout.duration_minutes is not None:
+            facts.append(f"{workout.duration_minutes} минут")
+        pump = details.get("pump")
+        facts.append(f"памп {pump}/10" if pump is not None else "числовой памп не зафиксирован")
+        pain = {
+            "reported_none": "явно сообщалось, что боли не было",
+            "reported": "боль была зафиксирована",
+            "unknown": "про боль данных нет",
+        }.get(workout.pain_status, "про боль данных нет")
+        facts.append(pain)
+        lines.append(f"• {date_text}: " + "; ".join(facts) + ".")
+
+    current = analytics["7"]
+    lines.append(
+        f"За последние 7 дней: {current['sessions']} сессия, "
+        f"{current['duration_minutes']} минут и {current['total_climbs']} пролазов."
+    )
+    schedule = (plan.content if plan else {}).get("weekly_schedule", {})
+    if schedule:
+        lines.append("Текущий недельный план:")
+        day_names = {
+            "Monday": "Пн",
+            "Tuesday": "Вт",
+            "Wednesday": "Ср",
+            "Thursday": "Чт",
+            "Friday": "Пт",
+            "Saturday": "Сб",
+            "Sunday": "Вс",
+        }
+        for day, activity in schedule.items():
+            lines.append(f"• {day_names.get(day, day)}: {activity}.")
+    if event:
+        date_label = event.details.get("date_label")
+        if date_label == "late November 2026":
+            date_label = "конец ноября 2026"
+        lines.append(f"Поездка: {date_label or event.date or 'дата пока не указана'}.")
+    return "\n".join(lines)
+
+
 def _cosine(a: Iterable[float], b: Iterable[float]) -> float:
     av, bv = list(a), list(b)
     denominator = math.sqrt(sum(x * x for x in av)) * math.sqrt(sum(x * x for x in bv))

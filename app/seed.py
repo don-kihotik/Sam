@@ -148,20 +148,20 @@ async def seed_initial_data(session: AsyncSession, settings: Settings) -> None:
     )
     initial_plan = {
         "status": "initial hypothesis",
-        "summary": "Build comfortable climbing volume and mountain endurance for late November.",
+        "summary": "Набрать комфортный объём и горную выносливость к концу ноября.",
         "current_focus": [
-            "comfortable climbing volume",
-            "steady movement and technique",
-            "aerobic mountain conditioning",
+            "комфортный объём лазания",
+            "ровный темп и техника",
+            "общая горная выносливость",
         ],
         "weekly_schedule": {
-            "Monday": "rest or 30–60 minute walk",
-            "Tuesday": "easy-to-moderate climbing 60–90 minutes; mostly V1–V2 and some V3 without failure",
-            "Wednesday": "aerobic work 30–45 minutes plus mobility",
-            "Thursday": "climbing at a steady pace with technique focus; no hard projects",
-            "Friday": "rest",
-            "Saturday": "long wall or crag session at a comfortable pace",
-            "Sunday": "easy walk or recovery",
+            "Monday": "отдых или ходьба 30–60 минут",
+            "Tuesday": "лёгкое-среднее лазание 60–90 минут; больше V1–V2 и немного V3 без отказа",
+            "Wednesday": "аэробика 30–45 минут и мобилити",
+            "Thursday": "ровный темп и техника без жёстких проектов",
+            "Friday": "отдых",
+            "Saturday": "длинная спокойная сессия на стене или скалах",
+            "Sunday": "лёгкая прогулка или восстановление",
         },
         "preferred_climbing_days": ["Tuesday", "Thursday", "weekend"],
         "guardrails": [
@@ -180,7 +180,10 @@ async def seed_initial_data(session: AsyncSession, settings: Settings) -> None:
                 source_message_ids=[plan_source.id] if plan_source else [],
             )
         )
-    elif plan.end_date == date(2026, 10, 15) and plan.content.get("status") == "initial hypothesis":
+    elif plan.content.get("status") == "initial hypothesis" and (
+        plan.end_date == date(2026, 10, 15)
+        or (plan_source is not None and plan.source_message_ids == [plan_source.id])
+    ):
         plan.end_date = date(2026, 11, 30)
         plan.content = initial_plan
         plan.evidence = ["На ближайшую неделю я бы сделал так"]

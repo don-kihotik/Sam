@@ -6,7 +6,7 @@ from sqlalchemy.orm import selectinload
 from app.ai import FakeAIService
 from app.analytics import analytics_windows
 from app.db.models import AnalyticsSnapshot, Athlete, Event, Message, Plan, Workout
-from app.memory import ContextBuilder, semantic_history
+from app.memory import ContextBuilder, render_history_audit, semantic_history
 from app.schemas import (
     ClimbingEntry,
     CoachArtifacts,
@@ -85,6 +85,8 @@ async def test_analytics_are_calculated_from_normalized_entries(database, settin
             settings, FakeAIService(september_workout(["Сегодня лазил 45 минут"]))
         ).process(session, incoming(102, text))
         metrics = await analytics_windows(session, 1, date(2026, 9, 1))
+        athlete = await session.scalar(select(Athlete).where(Athlete.id == 1))
+        report = await render_history_audit(session, athlete=athlete, today=date(2026, 9, 1))
         snapshot = await session.scalar(
             select(AnalyticsSnapshot).where(
                 AnalyticsSnapshot.athlete_id == 1,
@@ -100,6 +102,23 @@ async def test_analytics_are_calculated_from_normalized_entries(database, settin
     assert metrics["7"]["pain_free_sessions"] == 0
     assert metrics["all_time"]["sessions"] == 2
     assert snapshot is not None and snapshot.metrics["total_climbs"] == 12
+    assert "2×V1" in report
+    assert "7×V1–V2" in report
+    assert "про боль данных нет" in report
+
+
+async def test_memory_audit_bypasses_freeform_coaching_model(database, settings):
+    ai = FakeAIService(
+        MessageExtraction(normalized_text="Сколько раз я лазил?", should_respond=True),
+        reply="не должен использоваться",
+    )
+    async with database.sessions() as session:
+        result = await MessageProcessor(settings, ai).process(
+            session, incoming(104, "Сэм, проверь память: сколько раз я лазил?")
+        )
+
+    assert result.reply is not None and result.reply.startswith("В базе 1 тренировка:")
+    assert ai.coach_contexts == []
 
 
 async def test_explicit_event_move_supersedes_old_target(database, settings):
