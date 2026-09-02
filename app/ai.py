@@ -7,7 +7,12 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from app.config import Settings
-from app.prompts import EXTRACTION_SYSTEM_PROMPT, SAM_SYSTEM_PROMPT, VIDEO_ANALYSIS_SYSTEM_PROMPT
+from app.prompts import (
+    EXTRACTION_SYSTEM_PROMPT,
+    SAM_SYSTEM_PROMPT,
+    TRANSCRIPTION_PROMPT,
+    VIDEO_ANALYSIS_SYSTEM_PROMPT,
+)
 from app.schemas import MessageExtraction
 
 
@@ -60,6 +65,7 @@ class AIService:
         result = await self.client.audio.transcriptions.create(
             model=self.settings.transcription_model,
             file=(filename, audio, content_type),
+            prompt=TRANSCRIPTION_PROMPT,
         )
         return result.text.strip()
 

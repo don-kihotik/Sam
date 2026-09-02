@@ -11,9 +11,15 @@ from app.schemas import (
     DailyStateCandidate,
     MemoryCandidate,
     MessageExtraction,
+    NamedScore,
     WorkoutCandidate,
 )
-from app.services import IncomingMessage, MessageProcessor, is_directly_addressed
+from app.services import (
+    IncomingMessage,
+    MessageProcessor,
+    is_directly_addressed,
+    remove_inferred_numeric_ratings,
+)
 
 
 def incoming(message_id: int, user_id: int, text: str) -> IncomingMessage:
@@ -169,3 +175,45 @@ def test_direct_address_detection():
     assert is_directly_addressed("/today")
     assert is_directly_addressed("обычный ответ", is_reply_to_sam=True)
     assert not is_directly_addressed("завтра идём лазить")
+    assert is_directly_addressed(
+        "Короче, Санта, для тебя голосом запишу",
+        allow_transcription_aliases=True,
+    )
+    assert not is_directly_addressed("Санта завтра идёт лазить")
+
+
+def test_qualitative_fatigue_is_not_converted_to_numeric_score():
+    extraction = MessageExtraction(
+        normalized_text="Сделал 7 трасс и сильно забился.",
+        workout=WorkoutCandidate(present=True, pump=7),
+        daily_state=DailyStateCandidate(
+            present=True,
+            general_fatigue=7,
+            soreness=[NamedScore(area="предплечья", value=7)],
+        ),
+    )
+
+    removed = remove_inferred_numeric_ratings(
+        "Сделал 7 трасс V1–V2, мало отдыхал и сильно забился.", extraction
+    )
+
+    assert extraction.workout.pump is None
+    assert extraction.daily_state.general_fatigue is None
+    assert extraction.daily_state.soreness == []
+    assert removed
+
+
+def test_explicit_numeric_rating_is_preserved():
+    extraction = MessageExtraction(
+        normalized_text="Забитость 6/10, боль в пальце на три.",
+        workout=WorkoutCandidate(
+            present=True,
+            pump=6,
+            pain=[NamedScore(area="палец", value=3)],
+        ),
+    )
+
+    remove_inferred_numeric_ratings("Забитость 6/10, боль в пальце на три.", extraction)
+
+    assert extraction.workout.pump == 6
+    assert extraction.workout.pain[0].value == 3

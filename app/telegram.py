@@ -203,7 +203,11 @@ class TelegramRuntime:
             attachment_metadata=attachment,
             is_reply_to_sam=is_reply,
         )
-        addressed = is_directly_addressed(text, is_reply_to_sam=is_reply)
+        addressed = is_directly_addressed(
+            text,
+            is_reply_to_sam=is_reply,
+            allow_transcription_aliases=message_type == "voice",
+        )
         try:
             async with self.database.sessions() as session:
                 result = await self.processor.process(session, incoming)

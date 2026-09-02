@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
@@ -54,9 +55,93 @@ class ProcessResult:
     mutations: list[dict[str, Any]] | None = None
 
 
-def is_directly_addressed(text: str, *, is_reply_to_sam: bool = False) -> bool:
+_TRANSCRIPTION_ADDRESS_ALIASES = re.compile(r"(?<!\w)санта(?!\w)", re.IGNORECASE)
+_DIRECT_ADDRESS = re.compile(r"(?<!\w)(?:сэм|sam)(?!\w)", re.IGNORECASE)
+_RATING_WORDS = {
+    0: "ноль",
+    1: "один",
+    2: "два",
+    3: "три",
+    4: "четыре",
+    5: "пять",
+    6: "шесть",
+    7: "семь",
+    8: "восемь",
+    9: "девять",
+    10: "десять",
+}
+_RATING_CUE = (
+    r"(?:памп\w*|забит\w*|забил\w*|боль\w*|болит\w*|болезнен\w*|rpe|"
+    r"нагрузк\w*|интенсивност\w*|энерги\w*|сон\w*|мотивац\w*|стресс\w*|устал\w*)"
+)
+
+
+def is_directly_addressed(
+    text: str,
+    *,
+    is_reply_to_sam: bool = False,
+    allow_transcription_aliases: bool = False,
+) -> bool:
     lowered = text.strip().lower()
-    return bool(is_reply_to_sam or lowered.startswith("/") or "сэм" in lowered or "sam" in lowered)
+    if is_reply_to_sam or lowered.startswith("/") or _DIRECT_ADDRESS.search(lowered):
+        return True
+    if not allow_transcription_aliases:
+        return False
+    opening = lowered[:160]
+    return bool(_TRANSCRIPTION_ADDRESS_ALIASES.search(opening) or "для тебя" in opening)
+
+
+def _score_was_explicitly_stated(text: str, value: float) -> bool:
+    integer_value = int(value)
+    if value == integer_value:
+        number = rf"{integer_value}(?:[.,]0)?"
+        word = _RATING_WORDS.get(integer_value)
+        score = rf"(?:{number}|{word})" if word else number
+    else:
+        score = re.escape(str(value)).replace(r"\.", "[.,]")
+
+    explicit_scale = rf"(?<!\w){score}\s*(?:/|из)\s*10(?!\w)"
+    direct_rating = rf"{_RATING_CUE}\s*(?:(?:на|уровень|оценка)\s*)?{score}(?!\w)"
+    linked_rating = rf"{_RATING_CUE}[^.!?\n]{{0,30}}\bна\s+{score}(?!\w)"
+    return bool(re.search(rf"(?:{explicit_scale}|{direct_rating}|{linked_rating})", text.lower()))
+
+
+def remove_inferred_numeric_ratings(text: str, extraction: MessageExtraction) -> list[str]:
+    """Drop 0–10 ratings that are not explicitly present in the user's words."""
+    removed: list[str] = []
+    workout = extraction.workout
+    for field in ("rpe", "pump"):
+        value = getattr(workout, field)
+        if value is not None and not _score_was_explicitly_stated(text, value):
+            setattr(workout, field, None)
+            removed.append(f"workout.{field}")
+    explicit_pain = []
+    for score in workout.pain:
+        if _score_was_explicitly_stated(text, score.value):
+            explicit_pain.append(score)
+        else:
+            removed.append(f"workout.pain:{score.area}")
+    workout.pain = explicit_pain
+
+    state = extraction.daily_state
+    for field in ("energy", "sleep_quality", "motivation", "stress", "general_fatigue"):
+        value = getattr(state, field)
+        if value is not None and not _score_was_explicitly_stated(text, value):
+            setattr(state, field, None)
+            removed.append(f"daily_state.{field}")
+    explicit_soreness = []
+    for score in state.soreness:
+        if _score_was_explicitly_stated(text, score.value):
+            explicit_soreness.append(score)
+        else:
+            removed.append(f"daily_state.soreness:{score.area}")
+    state.soreness = explicit_soreness
+    if removed:
+        extraction.uncertainty_notes.append(
+            "Числовые рейтинги без явно названной пользователем цифры удалены: "
+            + ", ".join(removed)
+        )
+    return removed
 
 
 class MessageProcessor:
@@ -112,7 +197,11 @@ class MessageProcessor:
         session.add(run)
         await session.commit()
 
-        addressed = is_directly_addressed(incoming.text, is_reply_to_sam=incoming.is_reply_to_sam)
+        addressed = is_directly_addressed(
+            incoming.text,
+            is_reply_to_sam=incoming.is_reply_to_sam,
+            allow_transcription_aliases=incoming.message_type == "voice",
+        )
         local_today = incoming.timestamp.astimezone(ZoneInfo(athlete.timezone)).date()
         try:
             recent = await recent_message_text(session, athlete.id, limit=12)
@@ -124,6 +213,7 @@ class MessageProcessor:
                 recent_context=recent,
                 directly_addressed=addressed,
             )
+            remove_inferred_numeric_ratings(incoming.text, extraction)
             message.normalized_text = extraction.normalized_text
             run.extracted = extraction.model_dump(mode="json")
             mutations = await self._apply_extraction(
