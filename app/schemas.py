@@ -93,13 +93,20 @@ class EventCandidate(BaseModel):
     evidence: list[str] = Field(default_factory=list)
 
 
+class WeeklyScheduleItem(BaseModel):
+    day: str
+    activity: str
+
+
 class PlanCandidate(BaseModel):
     action: Literal["none", "create", "update"] = "none"
     start_date: DateType | None = None
     end_date: DateType | None = None
     summary: str | None = None
     focus: list[str] = Field(default_factory=list)
-    weekly_schedule: dict[str, str] = Field(default_factory=dict)
+    # Structured Outputs does not support arbitrary-key dictionaries.  A list of
+    # fixed-shape objects produces a strict JSON schema accepted by the API.
+    weekly_schedule: list[WeeklyScheduleItem] = Field(default_factory=list)
     guardrails: list[str] = Field(default_factory=list)
     evidence: list[str] = Field(default_factory=list)
 

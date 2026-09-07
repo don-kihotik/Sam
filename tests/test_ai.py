@@ -1,8 +1,27 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+from openai.lib._pydantic import to_strict_json_schema
+
 from app.ai import AIService
 from app.prompts import TRANSCRIPTION_PROMPT
+from app.schemas import MessageExtraction
+
+
+def test_extraction_schema_contains_only_strict_objects():
+    schema = to_strict_json_schema(MessageExtraction)
+
+    def assert_strict_objects(node):
+        if isinstance(node, dict):
+            if node.get("type") == "object":
+                assert node.get("additionalProperties") is False
+            for value in node.values():
+                assert_strict_objects(value)
+        elif isinstance(node, list):
+            for value in node:
+                assert_strict_objects(value)
+
+    assert_strict_objects(schema)
 
 
 async def test_transcription_uses_climbing_vocabulary_prompt(settings):

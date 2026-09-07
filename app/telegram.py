@@ -4,6 +4,7 @@ import asyncio
 import html
 import logging
 import re
+from datetime import UTC, datetime
 from io import BytesIO
 
 from aiogram import Bot, Dispatcher, Router
@@ -83,6 +84,9 @@ class TelegramRuntime:
         self.processor = MessageProcessor(settings, ai)
         self._task: asyncio.Task | None = None
         self._bot_id: int | None = None
+        self.last_update_at: datetime | None = None
+        self.last_success_at: datetime | None = None
+        self.last_error: str | None = None
         self.router.message.register(self._handle_message)
         self.dispatcher.include_router(self.router)
 
@@ -94,6 +98,27 @@ class TelegramRuntime:
             self.dispatcher.start_polling(self.bot, handle_signals=False),
             name="telegram-polling",
         )
+        self._task.add_done_callback(self._polling_finished)
+
+    @property
+    def polling_running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    def health_details(self) -> dict[str, str | bool | None]:
+        return {
+            "polling_running": self.polling_running,
+            "last_update_at": self.last_update_at.isoformat() if self.last_update_at else None,
+            "last_success_at": self.last_success_at.isoformat() if self.last_success_at else None,
+            "last_error": self.last_error,
+        }
+
+    def _polling_finished(self, task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            self.last_error = f"polling: {type(error).__name__}: {error}"
+            logger.error("Telegram polling stopped: %s", error)
 
     async def stop(self) -> None:
         await self.dispatcher.stop_polling()
@@ -115,6 +140,7 @@ class TelegramRuntime:
         video, video_message = find_video(message)
         if not (message.text or message.caption or message.voice or video):
             return
+        self.last_update_at = datetime.now(UTC)
 
         if message.text and message.text.split("@", 1)[0].strip().lower() == "/whoami":
             await message.reply(f"Твой Telegram user ID: {message.from_user.id}")
@@ -231,6 +257,8 @@ class TelegramRuntime:
         try:
             async with self.database.sessions() as session:
                 result = await self.processor.process(session, incoming)
+            self.last_success_at = datetime.now(UTC)
+            self.last_error = None
             if result.reply and result.athlete_id:
                 sent = await message.reply(
                     format_telegram_reply(result.reply),
@@ -245,7 +273,8 @@ class TelegramRuntime:
                         text=result.reply,
                         timestamp=sent.date,
                     )
-        except Exception:
+        except Exception as exc:
+            self.last_error = f"message {message.message_id}: {type(exc).__name__}: {exc}"
             logger.exception(
                 "Message processing failed for Telegram message %s", message.message_id
             )

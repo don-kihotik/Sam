@@ -20,7 +20,11 @@ from app.schemas import CoachArtifacts, MessageExtraction
 class AIService:
     def __init__(self, settings: Settings, client: AsyncOpenAI | None = None):
         self.settings = settings
-        self.client = client or AsyncOpenAI(api_key=settings.openai_api_key)
+        self.client = client or AsyncOpenAI(
+            api_key=settings.openai_api_key,
+            timeout=120.0,
+            max_retries=0,
+        )
 
     async def extract(
         self,

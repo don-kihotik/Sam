@@ -331,3 +331,12 @@ After a schema release, the idempotent repair command can be run inside the appl
 ```powershell
 fly ssh console --app sam-climbing -C "python -m app.maintenance"
 ```
+
+If message rows were saved but their processing runs remained in `started`, replay them with:
+
+```powershell
+fly ssh console --app sam-climbing --pty=false -C "python -u -m app.recover_pending"
+```
+
+The recovery command normalizes casual messages without generating delayed chat noise, rebuilds
+structured climbing history for relevant messages, and sends at most the latest pending direct reply.

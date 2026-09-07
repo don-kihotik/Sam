@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from app.ai import AIService
 from app.config import get_settings
@@ -46,9 +46,19 @@ app = FastAPI(title="Sam", version="0.1.0", lifespan=lifespan)
 
 
 @app.get("/health")
-async def health() -> dict:
+async def health(request: Request) -> dict:
+    telegram: TelegramRuntime | None = getattr(request.app.state, "telegram", None)
+    telegram_health = telegram.health_details() if telegram else None
+    healthy = bool(
+        settings.telegram_ready
+        and settings.openai_ready
+        and telegram_health
+        and telegram_health["polling_running"]
+        and not telegram_health["last_error"]
+    )
     return {
-        "status": "ok",
+        "status": "ok" if healthy else "degraded",
         "telegram_configured": settings.telegram_ready,
         "openai_configured": settings.openai_ready,
+        "telegram": telegram_health,
     }

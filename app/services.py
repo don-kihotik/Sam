@@ -634,7 +634,9 @@ class MessageProcessor:
         content = {
             "summary": candidate.summary,
             "current_focus": candidate.focus,
-            "weekly_schedule": candidate.weekly_schedule,
+            "weekly_schedule": {
+                item.day: item.activity for item in candidate.weekly_schedule
+            },
             "guardrails": candidate.guardrails,
         }
         if current is not None:

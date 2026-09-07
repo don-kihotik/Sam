@@ -13,6 +13,7 @@ from app.schemas import (
     EventCandidate,
     MessageExtraction,
     PlanCandidate,
+    WeeklyScheduleItem,
     WorkoutCandidate,
 )
 from app.services import IncomingMessage, MessageProcessor
@@ -155,7 +156,10 @@ class PlanAI(FakeAIService):
             plan=PlanCandidate(
                 action="update",
                 summary="Plan for this week",
-                weekly_schedule={"Monday": "rest", "Tuesday": "easy climbing"},
+                weekly_schedule=[
+                    WeeklyScheduleItem(day="Monday", activity="rest"),
+                    WeeklyScheduleItem(day="Tuesday", activity="easy climbing"),
+                ],
                 evidence=["Пн — отдых; Вт — лёгкое лазание"],
             )
         )
