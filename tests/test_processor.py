@@ -211,6 +211,27 @@ async def test_non_addressed_message_can_be_silently_learned(database, settings)
     assert result.mutations and result.mutations[0]["kind"] == "daily_state"
 
 
+async def test_tentative_backlog_does_not_bypass_silent_group_decision(database, settings):
+    extraction = MessageExtraction(
+        normalized_text="Не-не, теперь с тебя 6c.",
+        should_respond=False,
+        backlog=BacklogCandidate(
+            action="confirm",
+            item_type="idea",
+            title="Reach 6c",
+        ),
+    )
+    processor = MessageProcessor(settings, FakeAIService(extraction, reply="Лишний ответ"))
+
+    async with database.sessions() as session:
+        result = await processor.process(
+            session,
+            incoming(13, 202, "не-не. теперь не отвертишься. с тебя теперь 6с :))"),
+        )
+
+    assert result.reply is None
+
+
 def test_direct_address_detection():
     assert is_directly_addressed("Сэм, что сегодня?")
     assert is_directly_addressed("/today")

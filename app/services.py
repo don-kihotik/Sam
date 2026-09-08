@@ -292,9 +292,10 @@ class MessageProcessor:
                 logger.warning("Embedding failed for message %s: %s", message.id, exc)
                 mutations.append({"kind": "embedding", "status": "failed"})
 
-            should_reply = (
-                addressed or extraction.should_respond or extraction.backlog.action != "none"
-            )
+            # `should_respond` is the extraction model's explicit conversation decision.
+            # A tentative backlog classification must never bypass it: casual goals and
+            # group banter can otherwise be mistaken for product ideas requiring confirmation.
+            should_reply = addressed or extraction.should_respond
             reply = None
             if should_reply:
                 if is_history_audit_request(incoming.text):
