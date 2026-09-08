@@ -1,6 +1,12 @@
 from aiogram.enums import ChatType
 
-from app.telegram import compose_video_context, format_telegram_reply, is_allowed_chat
+from app.telegram import (
+    compose_video_context,
+    format_telegram_reply,
+    is_allowed_chat,
+    should_force_response,
+    should_process_video,
+)
 
 
 def test_whoami_command_normalization():
@@ -57,4 +63,33 @@ def test_configured_group_remains_allowed(settings):
         chat_id=-100123,
         chat_type=ChatType.SUPERGROUP,
         user_id=999,
+    )
+
+
+def test_bare_group_video_is_not_treated_as_a_request():
+    assert not should_process_video("", chat_type=ChatType.SUPERGROUP)
+    assert not should_process_video("Красивый пролаз", chat_type=ChatType.SUPERGROUP)
+
+
+def test_explicit_video_request_is_processed():
+    assert should_process_video("Сэм, разбери технику", chat_type=ChatType.SUPERGROUP)
+    assert should_process_video("Посмотри, где ошибка", chat_type=ChatType.SUPERGROUP)
+    assert should_process_video("", chat_type=ChatType.PRIVATE)
+
+
+def test_casual_reply_to_sam_does_not_force_an_answer():
+    assert not should_force_response(
+        "6c звучит мощно! Беру жумар;)))",
+        chat_type=ChatType.SUPERGROUP,
+        is_reply_to_bot=True,
+    )
+    assert should_force_response(
+        "Почему ты так считаешь?",
+        chat_type=ChatType.SUPERGROUP,
+        is_reply_to_bot=True,
+    )
+    assert should_force_response(
+        "Сэм, поясни",
+        chat_type=ChatType.SUPERGROUP,
+        is_reply_to_bot=False,
     )

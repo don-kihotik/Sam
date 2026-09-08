@@ -226,6 +226,11 @@ the referenced video, transcribes any speech, extracts a configurable number of 
 frames and gives cautious visual observations. He should explicitly distinguish visible evidence
 from hypotheses and must not claim precise joint loads, grip force or continuous motion analysis.
 
+In the shared group, a bare video is logged but ignored until somebody explicitly asks Sam to
+analyze it. The hosted Telegram Bot API only lets bots download files up to 20 MB; for a larger
+requested video Sam records the size and explains that a shorter or compressed copy is needed.
+Casual replies to Sam do not force a response unless they contain a question or request.
+
 ### Correction
 
 After recording a workout, send:

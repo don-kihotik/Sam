@@ -21,6 +21,17 @@ from app.video import extract_video_frames
 logger = logging.getLogger(__name__)
 
 _BOLD_PATTERN = re.compile(r"\*\*([^*\n]+)\*\*")
+_ACTIONABLE_REQUEST = re.compile(
+    r"(?:\?|^\s*(?:что|как|почему|зачем|когда|где|можешь|скажи|посоветуй|объясни|"
+    r"проверь|разбери|посмотри|запомни|добавь|исправь|переведи)\b)",
+    re.IGNORECASE,
+)
+_VIDEO_ANALYSIS_REQUEST = re.compile(
+    r"(?:разбер\w*|посмотр\w*|проанализ\w*|техник\w*|ошибк\w*|"
+    r"что\s+(?:не\s+так|видно)|где\s+.*(?:сил|ошиб))",
+    re.IGNORECASE,
+)
+TELEGRAM_DOWNLOAD_LIMIT_BYTES = 20 * 1024 * 1024
 
 
 def known_user_ids(settings: Settings) -> set[int]:
@@ -51,6 +62,37 @@ def format_telegram_reply(text: str) -> str:
     """Render Sam's limited Markdown safely as Telegram HTML."""
     escaped = html.escape(text)
     return _BOLD_PATTERN.sub(r"<b>\1</b>", escaped)
+
+
+def looks_like_actionable_request(text: str) -> bool:
+    return bool(_ACTIONABLE_REQUEST.search(text.strip()))
+
+
+def should_process_video(text: str, *, chat_type: ChatType) -> bool:
+    """Analyze private videos and group videos carrying an explicit request only."""
+    if chat_type == ChatType.PRIVATE:
+        return True
+    return bool(
+        is_directly_addressed(text)
+        or _VIDEO_ANALYSIS_REQUEST.search(text)
+    )
+
+
+def should_force_response(
+    text: str,
+    *,
+    chat_type: ChatType,
+    is_reply_to_bot: bool,
+    allow_transcription_aliases: bool = False,
+    media_requested: bool = False,
+) -> bool:
+    if chat_type == ChatType.PRIVATE or media_requested:
+        return True
+    if is_directly_addressed(
+        text, allow_transcription_aliases=allow_transcription_aliases
+    ):
+        return True
+    return is_reply_to_bot and looks_like_actionable_request(text)
 
 
 def find_video(message: TelegramMessage) -> tuple[Video | VideoNote | None, TelegramMessage]:
@@ -87,6 +129,7 @@ class TelegramRuntime:
         self.last_update_at: datetime | None = None
         self.last_success_at: datetime | None = None
         self.last_error: str | None = None
+        self.last_media_error: str | None = None
         self.router.message.register(self._handle_message)
         self.dispatcher.include_router(self.router)
 
@@ -110,6 +153,7 @@ class TelegramRuntime:
             "last_update_at": self.last_update_at.isoformat() if self.last_update_at else None,
             "last_success_at": self.last_success_at.isoformat() if self.last_success_at else None,
             "last_error": self.last_error,
+            "last_media_error": self.last_media_error,
         }
 
     def _polling_finished(self, task: asyncio.Task) -> None:
@@ -125,6 +169,40 @@ class TelegramRuntime:
         if self._task:
             await self._task
         await self.bot.session.close()
+
+    async def _record_media_outcome(
+        self,
+        message: TelegramMessage,
+        *,
+        text: str,
+        message_type: str,
+        attachment: dict,
+        status: str,
+        reason: str,
+        transcript: str | None = None,
+    ) -> None:
+        if message.from_user is None:
+            return
+        incoming = IncomingMessage(
+            telegram_message_id=message.message_id,
+            telegram_chat_id=message.chat.id,
+            telegram_user_id=message.from_user.id,
+            timestamp=message.date,
+            text=text,
+            transcript=transcript,
+            message_type=message_type,
+            reply_to_message_id=(
+                message.reply_to_message.message_id if message.reply_to_message else None
+            ),
+            attachment_metadata=attachment,
+        )
+        async with self.database.sessions() as session:
+            await self.processor.record_unprocessed(
+                session,
+                incoming,
+                status=status,
+                reason=reason,
+            )
 
     async def _handle_message(self, message: TelegramMessage) -> None:
         if message.from_user is None or message.from_user.is_bot:
@@ -147,6 +225,36 @@ class TelegramRuntime:
             return
 
         text = message.text or message.caption or ""
+        is_reply_to_bot = bool(
+            message.reply_to_message
+            and message.reply_to_message.from_user
+            and message.reply_to_message.from_user.id == self._bot_id
+        )
+        current_message_has_video = bool(message.video or message.video_note)
+        video_requested = bool(video and should_process_video(text, chat_type=message.chat.type))
+        if video and not video_requested:
+            if current_message_has_video:
+                message_type = "video_note" if message.video_note else "video"
+                attachment = {
+                    "file_id": video.file_id,
+                    "file_unique_id": video.file_unique_id,
+                    "telegram_file_size_bytes": getattr(video, "file_size", None),
+                    "duration_seconds": getattr(video, "duration", None),
+                    "media_status": "ignored_not_requested",
+                }
+                await self._record_media_outcome(
+                    message,
+                    text=text,
+                    message_type=message_type,
+                    attachment=attachment,
+                    status="completed",
+                    reason="video_ignored_not_requested",
+                )
+                self.last_success_at = datetime.now(UTC)
+                return
+            # A casual text reply to somebody else's video remains a normal text message.
+            video = None
+
         transcript = None
         attachment: dict = {}
         message_type = "text"
@@ -178,20 +286,67 @@ class TelegramRuntime:
                 return
 
             message_type = "video_note" if video_message.video_note else "video"
+            telegram_file_size = getattr(video, "file_size", None)
+            attachment = {
+                "file_id": video.file_id,
+                "file_unique_id": video.file_unique_id,
+                "telegram_file_size_bytes": telegram_file_size,
+                "duration_seconds": getattr(video, "duration", None),
+                "source_message_id": video_message.message_id,
+            }
+            if telegram_file_size and telegram_file_size > TELEGRAM_DOWNLOAD_LIMIT_BYTES:
+                size_mb = telegram_file_size / (1024 * 1024)
+                reason = (
+                    f"telegram_file_too_large: {telegram_file_size} bytes exceeds "
+                    f"{TELEGRAM_DOWNLOAD_LIMIT_BYTES} byte Bot API limit"
+                )
+                attachment["media_status"] = "failed_too_large"
+                await self._record_media_outcome(
+                    message,
+                    text=text,
+                    message_type=message_type,
+                    attachment=attachment,
+                    status="failed",
+                    reason=reason,
+                )
+                self.last_media_error = reason
+                await message.reply(
+                    f"Видео весит {size_mb:.1f} MB, а Telegram отдаёт обычному боту "
+                    "файлы только до 20 MB. Пришли более короткую или сжатую версию."
+                )
+                return
+
             buffer = BytesIO()
             try:
                 await self.bot.download(video, destination=buffer)
                 video_bytes = buffer.getvalue()
-            except Exception:
-                logger.exception("Telegram video download failed")
-                await message.reply("Не смог скачать видео. Попробуй отправить его ещё раз.")
+            except Exception as exc:
+                reason = f"telegram_video_download_failed: {type(exc).__name__}: {exc}"
+                attachment["media_status"] = "failed_download"
+                await self._record_media_outcome(
+                    message,
+                    text=text,
+                    message_type=message_type,
+                    attachment=attachment,
+                    status="failed",
+                    reason=reason,
+                )
+                self.last_media_error = reason
+                logger.exception(
+                    "Telegram video download failed: message=%s file_size=%s",
+                    message.message_id,
+                    telegram_file_size,
+                )
+                await message.reply(
+                    "Не смог скачать запрошенное видео из Telegram. Ошибку и параметры файла "
+                    "сохранил; повторная отправка нужна только после проверки причины."
+                )
                 return
 
             filename = getattr(video, "file_name", None) or f"{message_type}.mp4"
             duration = getattr(video, "duration", None)
             attachment = {
-                "file_id": video.file_id,
-                "file_unique_id": video.file_unique_id,
+                **attachment,
                 "duration_seconds": duration,
                 "mime_type": getattr(video, "mime_type", None) or "video/mp4",
                 "size_bytes": len(video_bytes),
@@ -218,7 +373,19 @@ class TelegramRuntime:
                     transcript=transcript or "",
                     safety_identifier=f"telegram-video-{message.from_user.id}",
                 )
-            except Exception:
+            except Exception as exc:
+                reason = f"video_frame_analysis_failed: {type(exc).__name__}: {exc}"
+                attachment["media_status"] = "failed_analysis"
+                await self._record_media_outcome(
+                    message,
+                    text=text,
+                    message_type=message_type,
+                    attachment=attachment,
+                    status="failed",
+                    reason=reason,
+                    transcript=transcript,
+                )
+                self.last_media_error = reason
                 logger.exception("Video frame analysis failed")
                 await message.reply(
                     "Не смог нормально разобрать кадры из видео. Попробуй другой файл или ракурс."
@@ -227,14 +394,17 @@ class TelegramRuntime:
 
             attachment["analyzed_frame_count"] = len(frames)
             attachment["vision_analysis"] = analysis
+            attachment["media_status"] = "analyzed"
+            self.last_media_error = None
             text = compose_video_context(request=text, transcript=transcript, analysis=analysis)
 
-        is_reply_to_bot = bool(
-            message.reply_to_message
-            and message.reply_to_message.from_user
-            and message.reply_to_message.from_user.id == self._bot_id
+        addressed = should_force_response(
+            text,
+            chat_type=message.chat.type,
+            is_reply_to_bot=is_reply_to_bot,
+            allow_transcription_aliases=message_type == "voice",
+            media_requested=video_requested,
         )
-        is_reply = bool(video or is_reply_to_bot)
         incoming = IncomingMessage(
             telegram_message_id=message.message_id,
             telegram_chat_id=message.chat.id,
@@ -247,12 +417,7 @@ class TelegramRuntime:
                 message.reply_to_message.message_id if message.reply_to_message else None
             ),
             attachment_metadata=attachment,
-            is_reply_to_sam=is_reply,
-        )
-        addressed = is_directly_addressed(
-            text,
-            is_reply_to_sam=is_reply,
-            allow_transcription_aliases=message_type == "voice",
+            is_reply_to_sam=addressed,
         )
         try:
             async with self.database.sessions() as session:

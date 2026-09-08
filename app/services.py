@@ -391,6 +391,65 @@ class MessageProcessor:
         await session.commit()
         return message
 
+    async def record_unprocessed(
+        self,
+        session: AsyncSession,
+        incoming: IncomingMessage,
+        *,
+        status: str,
+        reason: str,
+    ) -> ProcessResult:
+        """Persist a skipped or failed update that cannot enter the AI pipeline."""
+        existing = await session.scalar(
+            select(Message).where(
+                Message.telegram_chat_id == incoming.telegram_chat_id,
+                Message.telegram_message_id == incoming.telegram_message_id,
+            )
+        )
+        if existing:
+            return ProcessResult(
+                duplicate=True, message_id=existing.id, athlete_id=existing.athlete_id
+            )
+
+        athlete = await session.scalar(
+            select(Athlete).where(
+                Athlete.telegram_user_id == incoming.telegram_user_id,
+                Athlete.active.is_(True),
+            )
+        )
+        if athlete is None:
+            return ProcessResult(ignored_unknown_user=True)
+
+        message = Message(
+            telegram_message_id=incoming.telegram_message_id,
+            telegram_chat_id=incoming.telegram_chat_id,
+            telegram_user_id=incoming.telegram_user_id,
+            athlete_id=athlete.id,
+            reply_to_message_id=incoming.reply_to_message_id,
+            direction="incoming",
+            message_type=incoming.message_type,
+            raw_text=incoming.text or None,
+            transcript=incoming.transcript,
+            attachment_data=incoming.attachment_metadata or {},
+            telegram_timestamp=incoming.timestamp,
+        )
+        session.add(message)
+        await session.flush()
+        session.add(
+            ProcessingRun(
+                message_id=message.id,
+                status=status,
+                extraction_model=self.settings.extraction_model,
+                coaching_model=self.settings.sam_model,
+                prompt_version=PROMPT_VERSION,
+                extracted={"pipeline_outcome": reason},
+                mutations=[],
+                error=reason if status == "failed" else None,
+            )
+        )
+        await session.commit()
+        return ProcessResult(message_id=message.id, athlete_id=athlete.id, mutations=[])
+
     async def _apply_extraction(
         self,
         session: AsyncSession,

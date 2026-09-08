@@ -3,7 +3,7 @@ from datetime import UTC, date, datetime
 from sqlalchemy import func, select
 
 from app.ai import FakeAIService
-from app.db.models import Athlete, BacklogItem, Correction, Message, Workout
+from app.db.models import Athlete, BacklogItem, Correction, Message, ProcessingRun, Workout
 from app.schemas import (
     BacklogCandidate,
     ClimbingEntry,
@@ -103,6 +103,38 @@ async def test_unknown_user_is_not_persisted(database, settings):
         count = await session.scalar(select(func.count(Message.id)))
     assert result.ignored_unknown_user is True
     assert count == 0
+
+
+async def test_failed_media_update_is_persisted_for_diagnostics(database, settings):
+    processor = MessageProcessor(
+        settings, FakeAIService(MessageExtraction(normalized_text="unused"))
+    )
+    update = IncomingMessage(
+        telegram_message_id=81,
+        telegram_chat_id=-100123,
+        telegram_user_id=101,
+        timestamp=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        text="Сэм, разбери видео",
+        message_type="video",
+        attachment_metadata={"telegram_file_size_bytes": 25_000_000},
+    )
+
+    async with database.sessions() as session:
+        result = await processor.record_unprocessed(
+            session,
+            update,
+            status="failed",
+            reason="telegram_file_too_large",
+        )
+        message = await session.get(Message, result.message_id)
+        run = await session.scalar(
+            select(ProcessingRun).where(ProcessingRun.message_id == result.message_id)
+        )
+
+    assert message is not None
+    assert message.attachment_data["telegram_file_size_bytes"] == 25_000_000
+    assert run is not None and run.status == "failed"
+    assert run.error == "telegram_file_too_large"
 
 
 async def test_explicit_backlog_creation(database, settings):
