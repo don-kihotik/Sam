@@ -10,6 +10,8 @@ from app.seed import seed_initial_data
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     return Settings(
+        _env_file=None,
+        telegram_bot_token="123456:test",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'test.sqlite3'}",
         openai_api_key="test",
         telegram_allowed_chat_id=-100123,

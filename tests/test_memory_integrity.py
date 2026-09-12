@@ -104,7 +104,7 @@ async def test_analytics_are_calculated_from_normalized_entries(database, settin
     assert metrics["all_time"]["sessions"] == 2
     assert snapshot is not None and snapshot.metrics["total_climbs"] == 12
     assert "2×V1" in report
-    assert "7×V1–V2" in report
+    assert "7×V1-V2" in report
     assert "про боль данных нет" in report
 
 
@@ -168,7 +168,7 @@ class PlanAI(FakeAIService):
         return [1.0] * 1536
 
 
-async def test_outgoing_plan_is_persisted_and_embedded(database, settings):
+async def test_outgoing_message_is_not_reextracted_as_training_evidence(database, settings):
     processor = MessageProcessor(settings, PlanAI(MessageExtraction(normalized_text="")))
     text = "План на неделю: Пн — отдых; Вт — лёгкое лазание; Ср — аэробика; Чт — техника."
     async with database.sessions() as session:
@@ -180,13 +180,10 @@ async def test_outgoing_plan_is_persisted_and_embedded(database, settings):
             text=text,
         )
         plan = await session.scalar(
-            select(Plan)
-            .where(Plan.athlete_id == 1, Plan.status == "active")
-            .order_by(Plan.created_at.desc())
+            select(Plan).where(Plan.athlete_id == 1, Plan.status == "active")
         )
-
-    assert message.embedding is not None
-    assert plan is not None and plan.content["weekly_schedule"]["Monday"] == "rest"
+    assert message.embedding is None
+    assert plan is not None and plan.content["weekly_schedule"] == {}
 
 
 async def test_semantic_history_excludes_current_message(database):
@@ -231,7 +228,7 @@ async def test_semantic_history_excludes_current_message(database):
         )
 
     assert "current" not in matches
-    assert "saved plan" in matches
+    assert matches == []  # Sam\'s own assertions are not user evidence
 
 
 async def test_memory_audit_context_contains_canonical_truth(database):
@@ -247,6 +244,6 @@ async def test_memory_audit_context_contains_canonical_truth(database):
         )
 
     assert "late November 2026" in context
-    assert "'all_time': {'sessions': 1}" in context
-    assert "pain_status=reported_none" in context
+    assert '"all_time": {"sessions": 1}' in context
+    assert '"pain_status": "reported_none"' in context
     assert "weekly_schedule" in context

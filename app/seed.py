@@ -1,13 +1,14 @@
-from datetime import date
+"""Idempotent setup and explicitly approved September product preferences."""
+
+from datetime import UTC, date, datetime
 from hashlib import sha256
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.analytics import grade_rank
 from app.config import Settings
-from app.db.models import Athlete, Event, Message, Plan, Workout, WorkoutEntry
-from app.maintenance import canonicalize_history
+from app.db.models import Athlete, Correction, Event, Fact, Message, Plan, Workout, WorkoutEntry
+from app.grades import grade_rank
 
 ALEXEY_PROFILE = {
     "identity": {"name": "Alexey"},
@@ -49,194 +50,186 @@ ALEXEY_PROFILE = {
 }
 
 
-async def _upsert_athlete(
-    session: AsyncSession,
-    *,
-    name: str,
-    telegram_user_id: int | None,
-    timezone_name: str,
-    profile: dict,
-) -> Athlete:
-    athlete = await session.scalar(select(Athlete).where(Athlete.name == name))
-    if athlete is None:
-        athlete = Athlete(name=name, profile=profile, timezone=timezone_name)
-        session.add(athlete)
-        await session.flush()
-    if telegram_user_id is not None:
-        athlete.telegram_user_id = telegram_user_id
-    athlete.timezone = timezone_name
-    if name == "Alexey":
-        existing_profile = dict(athlete.profile or profile)
-        goals = existing_profile.get("goals", [])
-        if not goals or any("October" in str(goal) for goal in goals):
-            existing_profile["goals"] = profile["goals"]
-        for key, value in profile.items():
-            existing_profile.setdefault(key, value)
-        athlete.profile = existing_profile
-    return athlete
-
-
 async def seed_initial_data(session: AsyncSession, settings: Settings) -> None:
-    alexey = await _upsert_athlete(
-        session,
-        name="Alexey",
-        telegram_user_id=settings.alexey_telegram_user_id,
-        timezone_name=settings.timezone,
-        profile=ALEXEY_PROFILE,
-    )
-    await _upsert_athlete(
-        session,
-        name="Andrey",
-        telegram_user_id=settings.andrey_telegram_user_id,
-        timezone_name=settings.timezone,
-        profile={"identity": {"name": "Andrey"}},
-    )
-
-    event_source = await session.scalar(
-        select(Message)
-        .where(
-            Message.athlete_id == alexey.id,
-            Message.direction == "incoming",
-            Message.normalized_text.ilike("%конец ноября%"),
-        )
-        .order_by(Message.created_at.desc())
-        .limit(1)
-    )
-    plan_source = await session.scalar(
-        select(Message)
-        .where(
-            Message.athlete_id == alexey.id,
-            Message.direction == "outgoing",
-            Message.normalized_text.ilike("%На ближайшую неделю%"),
-        )
-        .order_by(Message.created_at.desc())
-        .limit(1)
-    )
-
-    event = await session.scalar(
-        select(Event).where(Event.athlete_id == alexey.id, Event.status == "active")
-    )
-    if event is None:
-        session.add(
-            Event(
-                athlete_id=alexey.id,
-                name="Guided multipitch climbing trip",
-                date=None,
-                date_precision="approximate",
-                details={
-                    "date_label": "late November 2026",
-                    "route_type": "multipitch",
-                    "guided": True,
-                },
-                evidence=["где-то конец ноября"],
-                source_message_ids=[event_source.id] if event_source else [],
-            )
-        )
-    elif event.date == date(2026, 10, 15) and event.details.get("date_is_approximate"):
-        event.date = None
-        event.date_precision = "approximate"
-        event.details = {
-            "date_label": "late November 2026",
-            "route_type": "multipitch",
-            "guided": True,
-        }
-        event.evidence = ["где-то конец ноября"]
-        event.source_message_ids = [event_source.id] if event_source else []
-
-    plan = await session.scalar(
-        select(Plan).where(Plan.athlete_id == alexey.id, Plan.status == "active")
-    )
-    initial_plan = {
-        "status": "initial hypothesis",
-        "summary": "Набрать комфортный объём и горную выносливость к концу ноября.",
-        "current_focus": [
-            "комфортный объём лазания",
-            "ровный темп и техника",
-            "общая горная выносливость",
-        ],
-        "weekly_schedule": {
-            "Monday": "отдых или ходьба 30–60 минут",
-            "Tuesday": "лёгкое-среднее лазание 60–90 минут; больше V1–V2 и немного V3 без отказа",
-            "Wednesday": "аэробика 30–45 минут и мобилити",
-            "Thursday": "ровный темп и техника без жёстких проектов",
-            "Friday": "отдых",
-            "Saturday": "длинная спокойная сессия на стене или скалах",
-            "Sunday": "лёгкая прогулка или восстановление",
-        },
-        "preferred_climbing_days": ["Tuesday", "Thursday", "weekend"],
-        "guardrails": [
-            "avoid rapid finger-load progression after the long break",
-            "adapt daily to pain and recovery",
-        ],
-    }
-    if plan is None:
-        session.add(
-            Plan(
-                athlete_id=alexey.id,
-                start_date=date(2026, 8, 30),
-                end_date=date(2026, 11, 30),
-                content=initial_plan,
-                evidence=["На ближайшую неделю я бы сделал так"],
-                source_message_ids=[plan_source.id] if plan_source else [],
-            )
-        )
-    elif plan.content.get("status") == "initial hypothesis" and (
-        plan.end_date == date(2026, 10, 15)
-        or (plan_source is not None and plan.source_message_ids == [plan_source.id])
+    athletes = {}
+    for name, uid, profile in (
+        ("Alexey", settings.alexey_telegram_user_id, ALEXEY_PROFILE),
+        ("Andrey", settings.andrey_telegram_user_id, {"identity": {"name": "Andrey"}}),
     ):
-        plan.end_date = date(2026, 11, 30)
-        plan.content = initial_plan
-        plan.evidence = ["На ближайшую неделю я бы сделал так"]
-        plan.source_message_ids = [plan_source.id] if plan_source else []
-
-    baseline_fingerprint = sha256(b"alexey-baseline-2026-08").hexdigest()
+        athlete = await session.scalar(select(Athlete).where(Athlete.name == name))
+        if athlete is None:
+            athlete = Athlete(
+                name=name, telegram_user_id=uid, profile=profile, timezone=settings.timezone
+            )
+            session.add(athlete)
+            await session.flush()
+        elif uid is not None:
+            athlete.telegram_user_id = uid
+        athletes[name] = athlete
+    alexey = athletes["Alexey"]
     baseline = await session.scalar(
-        select(Workout).where(
+        select(Workout)
+        .where(
             Workout.athlete_id == alexey.id,
-            Workout.fingerprint == baseline_fingerprint,
-            Workout.status == "active",
+            Workout.date.is_(None),
+            Workout.notes.like("Baseline session reported%"),
         )
+        .limit(1)
     )
     if baseline is None:
-        entries = [
-            ("bouldering", "V", "V1", 2, 2),
-            ("bouldering", "V", "V2", 3, 3),
-            ("bouldering", "V", "V3", 3, 2),
-            ("bouldering", "V", "V4", 1, 0),
-            ("auto_belay", "YDS", "5.8", 2, 2),
-            ("auto_belay", "YDS", "5.9", 6, 6),
-        ]
-        baseline = Workout(
-            athlete_id=alexey.id,
-            date=None,
-            date_precision="month",
-            type="climbing",
-            duration_minutes=None,
-            rpe=None,
-            notes="Baseline session reported during initial product setup; exact date unknown.",
-            structured_details={
-                "pump": 6.5,
-                "pain": [],
-                "reserve": "meaningful",
-                "date_label": "August 2026",
-            },
-            pain_status="reported_none",
-            evidence=["baseline imported from the agreed athlete profile"],
-            fingerprint=baseline_fingerprint,
-            source_message_ids=[],
-            entries=[
-                WorkoutEntry(
-                    discipline=discipline,
-                    grade_system=system,
-                    original_grade=original,
-                    grade_rank=grade_rank(system, original),
-                    count=count,
-                    completed_count=completed,
-                )
-                for discipline, system, original, count, completed in entries
-            ],
+        session.add(
+            Workout(
+                athlete_id=alexey.id,
+                date=None,
+                date_precision="month",
+                type="climbing",
+                notes="Baseline session reported during initial product setup; exact date unknown.",
+                structured_details={
+                    "pump": None,
+                    "pump_range": [6, 7],
+                    "date_label": "August 2026",
+                },
+                pain_status="reported_none",
+                source_message_ids=[],
+                evidence=["baseline imported from the agreed athlete profile"],
+                fingerprint=sha256(b"alexey-baseline-2026-08").hexdigest(),
+                entries=[
+                    WorkoutEntry(
+                        discipline=discipline,
+                        grade_system=system,
+                        original_grade=grade,
+                        grade_rank=grade_rank(system, grade),
+                        count=count,
+                        completed_count=complete,
+                    )
+                    for discipline, system, grade, count, complete in [
+                        ("bouldering", "V", "V1", 2, 2),
+                        ("bouldering", "V", "V2", 3, 3),
+                        ("bouldering", "V", "V3", 3, 2),
+                        ("bouldering", "V", "V4", 1, 0),
+                        ("auto_belay", "YDS", "5.8", 2, 2),
+                        ("auto_belay", "YDS", "5.9", 6, 6),
+                    ]
+                ],
+            )
         )
-        session.add(baseline)
-    await session.flush()
-    await canonicalize_history(session)
+    # A single provenance record makes this revision one-time, not a startup overwrite.
+    chat_id = settings.telegram_allowed_chat_id or -1
+    source = await session.scalar(
+        select(Message).where(
+            Message.telegram_chat_id == chat_id,
+            Message.telegram_message_id == -2026091201,
+        )
+    )
+    if source is None:
+        source = Message(
+            telegram_chat_id=chat_id,
+            telegram_message_id=-2026091201,
+            athlete_id=alexey.id,
+            direction="configuration",
+            message_type="configuration",
+            raw_text=(
+                "Confirmed by Alexey in Codex on 11–12 September 2026: personal tool for Alexey "
+                "and Andrey; accurate training journal, next-session advice, progress reviews. "
+                "Mostly listen; ask one useful missing-information question. Training facts may "
+                "be shared; private personal context remains private. Trip tentatively late "
+                "November, may move. Both have multipitch experience and will use a guide. "
+                "Alexey aims to improve endurance and lead selected sections up to French 6a+. "
+                "He currently has no gym partner, uses bouldering and autobelays, can train "
+                "2–3 gym sessions/week and optional running or other conditioning. "
+                "Andrey's individual grade goal has not been specified."
+            ),
+            processing_data={"origin": "user_confirmed_codex", "version": "20260912"},
+            telegram_timestamp=datetime(2026, 9, 12, tzinfo=UTC),
+        )
+        session.add(source)
+        await session.flush()
+        for name, athlete in athletes.items():
+            facts = {
+                "multipitch_experience": "Previous multipitch climbing experience; current lead level unverified.",
+                "trip": "Guided multipitch; lead selected sections. Tentative late November 2026, may move.",
+            }
+            if name == "Alexey":
+                facts.update(
+                    goal="Build endurance for guided multipitch days; aim to lead selected sections up to French 6a+.",
+                    gym_access="No partner currently; bouldering and autobelays.",
+                    availability="2–3 gym sessions/week; optional running or other conditioning.",
+                )
+            for field, value in facts.items():
+                session.add(
+                    Fact(
+                        athlete_id=athlete.id,
+                        field=field,
+                        value=value,
+                        source_message_id=source.id,
+                        visibility="group",
+                        status="active",
+                    )
+                )
+            current_events = (
+                await session.scalars(
+                    select(Event).where(Event.athlete_id == athlete.id, Event.status == "active")
+                )
+            ).all()
+            for event in current_events:
+                event.status = "superseded"
+            session.add(
+                Event(
+                    athlete_id=athlete.id,
+                    name="Guided multipitch trip",
+                    date=None,
+                    date_precision="approximate",
+                    shared_key="guided-multipitch",
+                    visibility="group",
+                    details={
+                        "date_label": "late November 2026 (tentative; may move)",
+                        "guided": True,
+                        "route_type": "multipitch",
+                        "role": "lead selected sections",
+                    },
+                    source_message_ids=[source.id],
+                    evidence=["late november may move"],
+                )
+            )
+            plans = (
+                await session.scalars(
+                    select(Plan).where(Plan.athlete_id == athlete.id, Plan.status == "active")
+                )
+            ).all()
+            for p in plans:
+                session.add(
+                    Correction(
+                        athlete_id=athlete.id,
+                        source_message_id=source.id,
+                        target_kind="plan",
+                        target_id=p.id,
+                        status="applied",
+                        payload={"reason": "approved_planning_reset", "before": p.content},
+                    )
+                )
+                p.status = "superseded"
+            session.add(
+                Plan(
+                    athlete_id=athlete.id,
+                    visibility="group",
+                    start_date=date(2026, 9, 12),
+                    end_date=None,
+                    source_message_ids=[source.id],
+                    evidence=[
+                        "approved training constraints; schedule to be adapted in conversation"
+                    ],
+                    content={
+                        "summary": "Основа подготовки — выносливость и экономичное лазание. Следующую сессию выбираем с учётом последних тренировок и восстановления.",
+                        "current_focus": [
+                            "climbing endurance",
+                            "efficient movement",
+                            "general endurance",
+                        ],
+                        "weekly_schedule": {},
+                        "constraints": facts,
+                        "schedule_status": "No fixed daily prescription; adapt to reported availability and recovery.",
+                        "target_date_flexible": True,
+                    },
+                )
+            )
     await session.commit()

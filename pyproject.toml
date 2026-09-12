@@ -16,6 +16,7 @@ dependencies = [
   "pgvector>=0.4,<1",
   "pydantic-settings>=2.8,<3",
   "sqlalchemy[asyncio]>=2.0.38,<3",
+  "tzdata>=2025.1",
   "uvicorn[standard]>=0.34,<1",
 ]
 
@@ -38,4 +39,3 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-

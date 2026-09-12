@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
 from app.ai import AIService
 from app.config import get_settings
@@ -46,19 +49,36 @@ app = FastAPI(title="Sam", version="0.1.0", lifespan=lifespan)
 
 
 @app.get("/health")
-async def health(request: Request) -> dict:
+async def health(request: Request) -> JSONResponse:
     telegram: TelegramRuntime | None = getattr(request.app.state, "telegram", None)
     telegram_health = telegram.health_details() if telegram else None
+    database_ok = False
+    queue = None
+    try:
+        async with asyncio.timeout(3):
+            async with request.app.state.database.sessions() as session:
+                await session.execute(text("SELECT 1"))
+            database_ok = True
+            if telegram:
+                queue = await telegram.queue_health()
+    except Exception as exc:  # noqa: BLE001 - health must remain available during outages
+        logging.getLogger(__name__).warning("Readiness probe failed: %s", type(exc).__name__)
     healthy = bool(
         settings.telegram_ready
         and settings.openai_ready
         and telegram_health
         and telegram_health["polling_running"]
-        and not telegram_health["last_error"]
+        and telegram_health["worker_running"]
+        and database_ok
     )
-    return {
-        "status": "ok" if healthy else "degraded",
-        "telegram_configured": settings.telegram_ready,
-        "openai_configured": settings.openai_ready,
-        "telegram": telegram_health,
-    }
+    return JSONResponse(
+        {
+            "status": "ok" if healthy else "degraded",
+            "telegram_configured": settings.telegram_ready,
+            "openai_configured": settings.openai_ready,
+            "telegram": telegram_health,
+            "database_ok": database_ok,
+            "queue": queue,
+        },
+        status_code=200 if healthy else 503,
+    )

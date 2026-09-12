@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -23,23 +23,27 @@ from app.db.models import (
     DailyState,
     Event,
     Fact,
+    FollowUp,
     Memory,
     Message,
+    Outbox,
     Plan,
     ProcessingRun,
     Workout,
     WorkoutEntry,
 )
-from app.maintenance import fingerprint_existing
+from app.grades import normalize_grade
 from app.memory import (
     ContextBuilder,
     is_history_audit_request,
     recent_message_text,
     render_history_audit,
+    render_plan,
     semantic_history,
 )
 from app.prompts import PROMPT_VERSION
-from app.schemas import CorrectionCandidate, MessageExtraction, PlanCandidate
+from app.records import retire_related, retract_edited_source, save_session
+from app.schemas import CoachReply, CorrectionCandidate, MessageExtraction, PlanCandidate
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +60,7 @@ class IncomingMessage:
     reply_to_message_id: int | None = None
     attachment_metadata: dict[str, Any] | None = None
     is_reply_to_sam: bool = False
+    is_edit: bool = False
 
 
 @dataclass(slots=True)
@@ -96,7 +101,14 @@ def is_directly_addressed(
     allow_transcription_aliases: bool = False,
 ) -> bool:
     lowered = text.strip().lower()
-    if is_reply_to_sam or lowered.startswith("/") or _DIRECT_ADDRESS.search(lowered):
+    if (
+        is_reply_to_sam
+        or lowered.startswith("/")
+        or re.search(
+            r"(?:^|[,!?]\s*)(?:сэм|sam)(?:[,!:?]|\s+(?:ты|что|как|помоги|запомни|проверь|напомни|разбери|да|please|can|what|help))",
+            lowered,
+        )
+    ):
         return True
     if not allow_transcription_aliases:
         return False
@@ -212,108 +224,187 @@ class MessageProcessor:
     ):
         self.settings = settings
         self.ai = ai
-        self.context_builder = context_builder or ContextBuilder(settings.recent_message_limit)
+        self.context_builder = context_builder or ContextBuilder(
+            settings.recent_message_limit, group_chat_id=settings.telegram_allowed_chat_id
+        )
 
     async def process(self, session: AsyncSession, incoming: IncomingMessage) -> ProcessResult:
-        existing = await session.scalar(
+        athlete = await session.scalar(
+            select(Athlete).where(
+                Athlete.telegram_user_id == incoming.telegram_user_id, Athlete.active.is_(True)
+            )
+        )
+        if athlete is None:
+            return ProcessResult(ignored_unknown_user=True)
+        message = await session.scalar(
             select(Message).where(
                 Message.telegram_chat_id == incoming.telegram_chat_id,
                 Message.telegram_message_id == incoming.telegram_message_id,
             )
         )
-        if existing:
-            return ProcessResult(
-                duplicate=True, message_id=existing.id, athlete_id=existing.athlete_id
+        if message:
+            run = await session.scalar(
+                select(ProcessingRun).where(ProcessingRun.message_id == message.id)
             )
-
-        athlete = await session.scalar(
-            select(Athlete).where(
-                Athlete.telegram_user_id == incoming.telegram_user_id,
-                Athlete.active.is_(True),
+            if run and run.status == "completed" and not incoming.is_edit:
+                return ProcessResult(duplicate=True, message_id=message.id, athlete_id=athlete.id)
+            if run is None:
+                run = ProcessingRun(message_id=message.id)
+                session.add(run)
+        else:
+            message = Message(
+                telegram_message_id=incoming.telegram_message_id,
+                telegram_chat_id=incoming.telegram_chat_id,
+                telegram_user_id=incoming.telegram_user_id,
+                athlete_id=athlete.id,
+                direction="incoming",
+                message_type=incoming.message_type,
+                telegram_timestamp=incoming.timestamp,
+                revision=1,
             )
-        )
-        if athlete is None:
-            return ProcessResult(ignored_unknown_user=True)
-
-        message = Message(
-            telegram_message_id=incoming.telegram_message_id,
-            telegram_chat_id=incoming.telegram_chat_id,
-            telegram_user_id=incoming.telegram_user_id,
-            athlete_id=athlete.id,
-            reply_to_message_id=incoming.reply_to_message_id,
-            direction="incoming",
-            message_type=incoming.message_type,
-            raw_text=incoming.text if incoming.message_type == "text" else None,
-            transcript=incoming.transcript,
-            attachment_data=incoming.attachment_metadata or {},
-            telegram_timestamp=incoming.timestamp,
-        )
-        session.add(message)
-        await session.flush()
-        run = ProcessingRun(
-            message_id=message.id,
-            extraction_model=self.settings.extraction_model,
-            coaching_model=self.settings.sam_model,
-            prompt_version=PROMPT_VERSION,
-        )
-        session.add(run)
+            session.add(message)
+            await session.flush()
+            run = ProcessingRun(message_id=message.id)
+            session.add(run)
+        message.raw_text = incoming.text
+        message.transcript = incoming.transcript
+        message.reply_to_message_id = incoming.reply_to_message_id
+        message.message_type = incoming.message_type
+        message.attachment_data = {
+            **(message.attachment_data or {}),
+            **(incoming.attachment_metadata or {}),
+        }
+        run.status = "started"
+        run.prompt_version = PROMPT_VERSION
+        run.extraction_model = self.settings.extraction_model
+        run.coaching_model = self.settings.sam_model
+        run.attempts = (run.attempts or 0) + 1
         await session.commit()
-
-        addressed = is_directly_addressed(
-            incoming.text,
-            is_reply_to_sam=incoming.is_reply_to_sam,
-            allow_transcription_aliases=incoming.message_type == "voice",
-        )
-        local_today = incoming.timestamp.astimezone(ZoneInfo(athlete.timezone)).date()
+        message_id, athlete_id = message.id, athlete.id
         try:
-            recent = await recent_message_text(session, athlete.id, limit=12)
+            today = incoming.timestamp.astimezone(ZoneInfo(athlete.timezone)).date()
+            recent = await recent_message_text(
+                session,
+                athlete.id,
+                limit=24,
+                chat_id=incoming.telegram_chat_id,
+                exclude_message_id=message.id,
+            )
+            followup = await session.scalar(
+                select(FollowUp)
+                .where(
+                    FollowUp.athlete_id == athlete.id,
+                    FollowUp.telegram_chat_id == incoming.telegram_chat_id,
+                    FollowUp.status == "pending",
+                    FollowUp.expires_at > incoming.timestamp,
+                )
+                .order_by(desc(FollowUp.id))
+                .limit(1)
+            )
+            session_context = await self.context_builder.extraction_context(
+                session,
+                athlete=athlete,
+                chat_id=incoming.telegram_chat_id,
+                reply_to_message_id=incoming.reply_to_message_id,
+                followup=followup,
+            )
+            addressed = (
+                is_directly_addressed(
+                    incoming.text,
+                    is_reply_to_sam=incoming.is_reply_to_sam,
+                    allow_transcription_aliases=incoming.message_type in {"voice", "video_note"},
+                )
+                or incoming.telegram_chat_id > 0
+            )
             extraction = await self.ai.extract(
                 text=incoming.text,
                 athlete_name=athlete.name,
-                local_date=local_today.isoformat(),
+                local_date=today.isoformat(),
                 timezone_name=athlete.timezone,
-                recent_context=recent,
+                recent_context=recent + "\n\n" + session_context,
                 directly_addressed=addressed,
             )
             remove_inferred_numeric_ratings(incoming.text, extraction)
+            for extra in extraction.additional_workouts:
+                remove_inferred_numeric_ratings(
+                    incoming.text, MessageExtraction(normalized_text=incoming.text, workout=extra)
+                )
             message.normalized_text = extraction.normalized_text
+            mutations = []
+            if incoming.is_edit:
+                mutations.extend(await retract_edited_source(session, message))
+            if extraction.answers_follow_up and followup:
+                extraction.workout.target_workout_id = (
+                    extraction.workout.target_workout_id or followup.workout_id
+                )
+                if extraction.workout.present:
+                    extraction.workout.session_action = "append"
+                followup.status = "answered"
             run.extracted = extraction.model_dump(mode="json")
-            mutations = await self._apply_extraction(
-                session,
-                athlete=athlete,
-                message=message,
-                extraction=extraction,
-                today=local_today,
-                source_text=incoming.text,
+            payload = (incoming.attachment_metadata or {}).get("telegram_payload", {})
+            evidence_text = incoming.text
+            if (incoming.attachment_metadata or {}).get("vision_analysis"):
+                evidence_text = " ".join(
+                    filter(
+                        None, [payload.get("text") or payload.get("caption"), incoming.transcript]
+                    )
+                )
+            mutations.extend(
+                await self._apply_extraction(
+                    session,
+                    athlete=athlete,
+                    message=message,
+                    extraction=extraction,
+                    today=today,
+                    source_text=evidence_text,
+                )
             )
             try:
-                message.embedding = await self.ai.embed(extraction.normalized_text)
-            except Exception as exc:  # noqa: BLE001 - optional embeddings must not block writes
-                logger.warning("Embedding failed for message %s: %s", message.id, exc)
-                mutations.append({"kind": "embedding", "status": "failed"})
-
-            # `should_respond` is the extraction model's explicit conversation decision.
-            # A tentative backlog classification must never bypass it: casual goals and
-            # group banter can otherwise be mistaken for product ideas requiring confirmation.
-            should_reply = addressed or extraction.should_respond
+                message.embedding = await self.ai.embed(incoming.text)
+            except Exception:  # noqa: BLE001 - embeddings are optional
+                mutations.append({"kind": "embedding", "status": "unavailable"})
+            # Banter is stored as conversation, never used as a coaching interrupt.
+            should_reply = (
+                addressed
+                or extraction.conversation_intent == "continuation"
+                or (extraction.should_respond and not extraction.is_banter)
+            )
+            if extraction.is_banter and not addressed:
+                should_reply = False
+            needs_clarification = any(
+                m.get("status") == "needs_session_clarification" for m in mutations
+            )
             reply = None
-            if should_reply:
-                if is_history_audit_request(incoming.text):
-                    reply = await render_history_audit(session, athlete=athlete, today=local_today)
+            if should_reply or needs_clarification:
+                if needs_clarification:
+                    reply = "Уточни, к какой тренировке относится поправка — дата или ответ на её запись?"
+                    coach_reply = CoachReply(text=reply)
+                elif is_history_audit_request(incoming.text):
+                    reply = await render_history_audit(
+                        session,
+                        athlete=athlete,
+                        today=today,
+                        chat_id=incoming.telegram_chat_id,
+                        offset=int(incoming.text.split()[1])
+                        if re.fullmatch(r"/history\s+\d+", incoming.text.strip())
+                        else 0,
+                    )
+                    coach_reply = CoachReply(text=reply)
                 else:
-                    query_embedding = message.embedding
                     matches = await semantic_history(
                         session,
                         athlete_id=athlete.id,
-                        query_embedding=query_embedding,
+                        query_embedding=message.embedding,
                         exclude_message_id=message.id,
+                        chat_id=incoming.telegram_chat_id,
                     )
                     context = await self.context_builder.build(
                         session,
                         athlete=athlete,
-                        today=local_today,
+                        today=today,
                         current_message=incoming.text,
                         semantic_matches=matches,
+                        chat_id=incoming.telegram_chat_id,
                         extraction_summary=json.dumps(
                             {
                                 "candidate": extraction.model_dump(mode="json", exclude_none=True),
@@ -322,28 +413,91 @@ class MessageProcessor:
                             ensure_ascii=False,
                         ),
                     )
-                    reply = await self.ai.coach(
-                        context=context,
-                        safety_identifier=f"telegram-{athlete.id}",
+                    coach_reply = await self.ai.coach_reply(
+                        context=context, safety_identifier=f"telegram-{athlete.id}"
                     )
+                    reply = coach_reply.text.strip()
+                if coach_reply.plan.action != "none":
+                    plan = coach_reply.plan
+                    # The plan object is the displayed plan, not a second interpretation of prose.
+                    record = await self._upsert_plan(
+                        session,
+                        athlete_id=athlete.id,
+                        candidate=plan,
+                        source_message_id=message.id,
+                        evidence=[plan.summary or "Generated plan"],
+                        today=today,
+                    )
+                    reply = (reply or "") + "\n\n" + render_plan(record)
+                if coach_reply.follow_up_question and not extraction.is_banter:
+                    question = coach_reply.follow_up_question.strip()
+                    if question.casefold() not in (reply or "").casefold():
+                        reply = (reply or "") + "\n\n" + question
+                    workout_id = coach_reply.follow_up_workout_id
+                    if workout_id:
+                        target = await session.get(Workout, workout_id)
+                        if not target or target.athlete_id != athlete.id:
+                            workout_id = None
+                    # One pending question per athlete/chat, with a bounded lifetime.
+                    pending = (
+                        await session.scalars(
+                            select(FollowUp).where(
+                                FollowUp.athlete_id == athlete.id,
+                                FollowUp.telegram_chat_id == incoming.telegram_chat_id,
+                                FollowUp.status.in_(["pending", "awaiting_delivery"]),
+                            )
+                        )
+                    ).all()
+                    for p in pending:
+                        p.status = "superseded"
+                    session.add(
+                        FollowUp(
+                            athlete_id=athlete.id,
+                            telegram_chat_id=incoming.telegram_chat_id,
+                            source_message_id=message.id,
+                            workout_id=workout_id,
+                            question=question,
+                            status="awaiting_delivery",
+                            expires_at=incoming.timestamp + timedelta(days=2),
+                        )
+                    )
+                if reply:
+                    existing_reply = await session.scalar(
+                        select(Outbox).where(
+                            Outbox.source_message_id == message.id,
+                            Outbox.revision == message.revision,
+                        )
+                    )
+                    if existing_reply is None:
+                        session.add(
+                            Outbox(
+                                source_message_id=message.id,
+                                revision=message.revision,
+                                athlete_id=athlete.id,
+                                telegram_chat_id=incoming.telegram_chat_id,
+                                reply_to_message_id=incoming.telegram_message_id,
+                                text=reply,
+                            )
+                        )
             run.mutations = mutations
-            await refresh_analytics_snapshots(session, athlete.id, local_today)
-            run.status = "completed"
+            await refresh_analytics_snapshots(session, athlete.id, today)
+            run.status, run.error, run.next_attempt_at = "completed", None, None
             await session.commit()
             return ProcessResult(
-                reply=reply,
-                message_id=message.id,
-                athlete_id=athlete.id,
-                mutations=mutations,
+                reply=reply, message_id=message_id, athlete_id=athlete_id, mutations=mutations
             )
         except Exception as exc:
             await session.rollback()
+            # IDs are captured before rollback; expired ORM attributes cannot be accessed here.
             run = await session.scalar(
-                select(ProcessingRun).where(ProcessingRun.message_id == message.id)
+                select(ProcessingRun).where(ProcessingRun.message_id == message_id)
             )
             if run:
-                run.status = "failed"
-                run.error = f"{type(exc).__name__}: {exc}"
+                run.status = "failed" if run.attempts >= 5 else "retry"
+                run.error = type(exc).__name__  # never store API URLs/tokens/response bodies
+                run.next_attempt_at = datetime.now(UTC) + timedelta(
+                    seconds=min(300, 5 * 2**run.attempts)
+                )
                 await session.commit()
             raise
 
@@ -356,81 +510,60 @@ class MessageProcessor:
         athlete_id: int,
         text: str,
         timestamp: datetime | None = None,
+        reply_to_message_id: int | None = None,
+        extract_artifacts: bool = False,
     ) -> Message:
+        existing = await session.scalar(
+            select(Message).where(
+                Message.telegram_chat_id == telegram_chat_id,
+                Message.telegram_message_id == telegram_message_id,
+            )
+        )
+        if existing:
+            return existing
         message = Message(
             telegram_message_id=telegram_message_id,
             telegram_chat_id=telegram_chat_id,
-            telegram_user_id=None,
             athlete_id=athlete_id,
             direction="outgoing",
             message_type="text",
             raw_text=text,
             normalized_text=text,
+            reply_to_message_id=reply_to_message_id,
             telegram_timestamp=timestamp or datetime.now(UTC),
         )
         session.add(message)
-        try:
-            message.embedding = await self.ai.embed(text)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Embedding failed for outgoing message: %s", exc)
         await session.flush()
-        if _looks_like_plan(text):
-            try:
-                artifacts = await self.ai.extract_coach_artifacts(text)
-                evidence = valid_evidence(text, artifacts.plan.evidence)
-                if artifacts.plan.action != "none" and evidence:
-                    await self._upsert_plan(
-                        session,
-                        athlete_id=athlete_id,
-                        candidate=artifacts.plan,
-                        source_message_id=message.id,
-                        evidence=evidence,
-                        today=(timestamp or datetime.now(UTC)).date(),
-                    )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Could not persist outgoing plan: %s", exc)
         await session.commit()
         return message
 
     async def record_unprocessed(
-        self,
-        session: AsyncSession,
-        incoming: IncomingMessage,
-        *,
-        status: str,
-        reason: str,
+        self, session: AsyncSession, incoming: IncomingMessage, *, status: str, reason: str
     ) -> ProcessResult:
-        """Persist a skipped or failed update that cannot enter the AI pipeline."""
-        existing = await session.scalar(
+        athlete = await session.scalar(
+            select(Athlete).where(
+                Athlete.telegram_user_id == incoming.telegram_user_id, Athlete.active.is_(True)
+            )
+        )
+        if not athlete:
+            return ProcessResult(ignored_unknown_user=True)
+        message = await session.scalar(
             select(Message).where(
                 Message.telegram_chat_id == incoming.telegram_chat_id,
                 Message.telegram_message_id == incoming.telegram_message_id,
             )
         )
-        if existing:
-            return ProcessResult(
-                duplicate=True, message_id=existing.id, athlete_id=existing.athlete_id
-            )
-
-        athlete = await session.scalar(
-            select(Athlete).where(
-                Athlete.telegram_user_id == incoming.telegram_user_id,
-                Athlete.active.is_(True),
-            )
-        )
-        if athlete is None:
-            return ProcessResult(ignored_unknown_user=True)
-
+        if message:
+            return ProcessResult(duplicate=True, message_id=message.id, athlete_id=athlete.id)
         message = Message(
             telegram_message_id=incoming.telegram_message_id,
             telegram_chat_id=incoming.telegram_chat_id,
             telegram_user_id=incoming.telegram_user_id,
             athlete_id=athlete.id,
-            reply_to_message_id=incoming.reply_to_message_id,
-            direction="incoming",
-            message_type=incoming.message_type,
-            raw_text=incoming.text or None,
+            raw_text=incoming.text,
             transcript=incoming.transcript,
+            message_type=incoming.message_type,
+            reply_to_message_id=incoming.reply_to_message_id,
             attachment_data=incoming.attachment_metadata or {},
             telegram_timestamp=incoming.timestamp,
         )
@@ -440,11 +573,7 @@ class MessageProcessor:
             ProcessingRun(
                 message_id=message.id,
                 status=status,
-                extraction_model=self.settings.extraction_model,
-                coaching_model=self.settings.sam_model,
-                prompt_version=PROMPT_VERSION,
                 extracted={"pipeline_outcome": reason},
-                mutations=[],
                 error=reason if status == "failed" else None,
             )
         )
@@ -461,148 +590,127 @@ class MessageProcessor:
         today: date,
         source_text: str,
     ) -> list[dict[str, Any]]:
-        mutations: list[dict[str, Any]] = []
-        workout = extraction.workout
-        workout_evidence = valid_evidence(source_text, workout.evidence)
-        if workout.present and workout_evidence:
-            workout_date = workout.date or today
-            fingerprint = _workout_fingerprint(athlete.id, workout_date, workout)
-            record = await session.scalar(
-                select(Workout).where(
-                    Workout.athlete_id == athlete.id,
-                    Workout.fingerprint == fingerprint,
-                    Workout.status == "active",
-                )
+        changes = []
+        public = message.telegram_chat_id == self.settings.telegram_allowed_chat_id
+        visibility = "group" if public else "private"
+        for index, c in enumerate([extraction.workout, *extraction.additional_workouts]):
+            if not c.present or extraction.is_banter:
+                continue
+            if index:
+                c.session_action = "new"
+            w, status = await save_session(
+                session,
+                athlete_id=athlete.id,
+                message=message,
+                candidate=c,
+                source_text=source_text,
+                today=today,
             )
-            if record is None:
-                created = True
-                pain_status = workout.pain_status
-                if workout.pain:
-                    pain_status = "reported"
-                record = Workout(
-                    athlete_id=athlete.id,
-                    date=workout_date,
-                    date_precision=workout.date_precision,
-                    type=workout.workout_type or "other",
-                    duration_minutes=workout.duration_minutes,
-                    rpe=workout.rpe,
-                    notes=workout.notes,
-                    structured_details={
-                        "pump": workout.pump,
-                        "pain": [x.model_dump() for x in workout.pain],
-                        "climbing": [x.model_dump(exclude_none=True) for x in workout.climbing],
-                        "confidence": workout.confidence,
-                        "date_inferred": workout.date_inferred,
-                    },
-                    pain_status=pain_status,
-                    evidence=workout_evidence,
-                    fingerprint=fingerprint,
-                    source_message_ids=[message.id],
-                    entries=[
-                        WorkoutEntry(
-                            discipline=entry.discipline,
-                            grade_system=entry.grade_system,
-                            original_grade=entry.original_grade,
-                            grade_rank=grade_rank(entry.grade_system, entry.original_grade),
-                            count=entry.count,
-                            completed_count=(entry.count if entry.completed is True else 0)
-                            if entry.completed is not None
-                            else None,
-                            attempts=entry.attempts,
-                            wall_style=entry.wall_style,
-                            movement_style=entry.movement_style,
-                            notes=entry.notes,
-                        )
-                        for entry in workout.climbing
-                    ],
-                )
-                session.add(record)
-                await session.flush()
-                mutations.append({"kind": "workout", "id": record.id, "status": "created"})
-            else:
-                created = False
-                record.source_message_ids = list(
-                    dict.fromkeys([*record.source_message_ids, message.id])
-                )
-                record.evidence = list(dict.fromkeys([*record.evidence, *workout_evidence]))
-                mutations.append({"kind": "workout", "id": record.id, "status": "duplicate_merged"})
-            if created:
-                await self._save_fact(
-                    session,
-                    athlete.id,
-                    message.id,
-                    "workout",
-                    {"id": record.id, "date": workout_date.isoformat(), "type": record.type},
-                    workout.date_inferred,
-                    workout.confidence,
-                )
-        elif workout.present:
-            mutations.append({"kind": "workout", "status": "rejected_no_current_evidence"})
-
+            changes.append({"kind": "workout", "id": w.id if w else None, "status": status})
         state = extraction.daily_state
-        state_evidence = valid_evidence(source_text, state.evidence)
-        if state.present and state_evidence:
-            state_date = state.date or today
-            values = state.model_dump(exclude={"present", "date", "confidence"}, exclude_none=True)
+        if (
+            state.present
+            and valid_evidence(source_text, state.evidence)
+            and not extraction.is_banter
+        ):
+            day = state.date or today
             record = await session.scalar(
                 select(DailyState).where(
-                    DailyState.athlete_id == athlete.id, DailyState.date == state_date
+                    DailyState.athlete_id == athlete.id, DailyState.date == day
                 )
             )
+            values = state.model_dump(exclude={"present", "date", "confidence"}, exclude_none=True)
+            # Notes retain origin visibility; shared context uses only numeric measurements.
+            values["_visibility"] = visibility
             if record is None:
                 record = DailyState(
-                    athlete_id=athlete.id,
-                    date=state_date,
-                    values=values,
-                    source_message_ids=[message.id],
+                    athlete_id=athlete.id, date=day, values=values, source_message_ids=[message.id]
                 )
                 session.add(record)
             else:
                 record.values = {**record.values, **values}
-                record.source_message_ids = [*record.source_message_ids, message.id]
+                record.source_message_ids = list(
+                    dict.fromkeys([*record.source_message_ids, message.id])
+                )
             await session.flush()
-            mutations.append({"kind": "daily_state", "id": record.id})
-        elif state.present:
-            mutations.append({"kind": "daily_state", "status": "rejected_no_current_evidence"})
-
+            changes.append({"kind": "daily_state", "id": record.id})
         if extraction.weight_kg is not None and valid_evidence(
             source_text, extraction.weight_evidence
         ):
-            measurement = BodyMeasurement(
-                athlete_id=athlete.id,
-                date=today,
-                weight_kg=extraction.weight_kg,
-                source_message_id=message.id,
+            session.add(
+                BodyMeasurement(
+                    athlete_id=athlete.id,
+                    date=today,
+                    weight_kg=extraction.weight_kg,
+                    source_message_id=message.id,
+                )
             )
-            session.add(measurement)
-            await session.flush()
-            mutations.append({"kind": "weight", "id": measurement.id})
-        elif extraction.weight_kg is not None:
-            mutations.append({"kind": "weight", "status": "rejected_no_current_evidence"})
-
+            changes.append({"kind": "weight", "status": "saved"})
+        for fact in extraction.profile_facts:
+            if not valid_evidence(source_text, fact.evidence) or extraction.is_banter:
+                continue
+            existing = (
+                await session.scalars(
+                    select(Fact).where(
+                        Fact.athlete_id == athlete.id,
+                        Fact.field == fact.field,
+                        Fact.status == "active",
+                    )
+                )
+            ).all()
+            for old in existing:
+                old.status = "superseded"
+            session.add(
+                Fact(
+                    athlete_id=athlete.id,
+                    field=fact.field[:100],
+                    value=fact.value,
+                    source_message_id=message.id,
+                    visibility=visibility,
+                    confidence=1,
+                    status="active",
+                )
+            )
+            changes.append({"kind": "profile_fact", "field": fact.field})
         for candidate in extraction.corrections:
+            if extraction.is_banter:
+                continue
             correction = await self._apply_correction(session, athlete, message, candidate, today)
-            mutations.append(
-                {"kind": "correction", "id": correction.id, "status": correction.status}
-            )
-
+            changes.append({"kind": "correction", "id": correction.id, "status": correction.status})
         backlog = extraction.backlog
-        if backlog.action == "create" and backlog.title and backlog.item_type:
-            item = BacklogItem(
-                created_by=athlete.id,
-                type=backlog.item_type,
-                title=backlog.title,
-                description=backlog.description,
-                original_message_id=message.id,
+        if (
+            backlog.action == "create"
+            and backlog.title
+            and backlog.item_type
+            and not extraction.is_banter
+        ):
+            exists = await session.scalar(
+                select(BacklogItem).where(BacklogItem.original_message_id == message.id)
             )
-            session.add(item)
-            await session.flush()
-            mutations.append({"kind": "backlog", "id": item.id})
-
+            if not exists:
+                item = BacklogItem(
+                    created_by=athlete.id,
+                    type=backlog.item_type,
+                    title=backlog.title,
+                    description=backlog.description,
+                    original_message_id=message.id,
+                    notes={"visibility": visibility},
+                )
+                session.add(item)
+                await session.flush()
+                changes.append({"kind": "backlog", "id": item.id})
         memory = extraction.memory
-        memory_evidence = valid_evidence(source_text, memory.evidence)
-        if memory.create and memory.summary and memory_evidence:
-            record = Memory(
+        if (
+            memory.create
+            and memory.summary
+            and valid_evidence(source_text, memory.evidence)
+            and not extraction.is_banter
+        ):
+            if memory.supersedes_id:
+                prior = await session.get(Memory, memory.supersedes_id)
+                if prior and prior.athlete_id == athlete.id:
+                    prior.status = "retired"
+            row = Memory(
                 athlete_id=athlete.id,
                 date=today,
                 kind=memory.kind,
@@ -612,68 +720,84 @@ class MessageProcessor:
                 importance=memory.importance,
                 confidence=memory.confidence,
                 status="hypothesis" if memory.kind == "coach" else "likely",
+                visibility=visibility,
             )
-            try:
-                record.embedding = await self.ai.embed(memory.summary)
-            except Exception as exc:  # noqa: BLE001 - optional embeddings must not block writes
-                logger.warning("Embedding failed for memory: %s", exc)
-            session.add(record)
+            session.add(row)
             await session.flush()
-            mutations.append({"kind": "memory", "id": record.id})
-        elif memory.create:
-            mutations.append({"kind": "memory", "status": "rejected_no_current_evidence"})
-
+            changes.append({"kind": "memory", "id": row.id})
         event = extraction.event
-        event_evidence = valid_evidence(source_text, event.evidence)
-        if event.action != "none" and event_evidence:
-            active_events = (
-                await session.scalars(
-                    select(Event).where(Event.athlete_id == athlete.id, Event.status == "active")
+        if (
+            event.action != "none"
+            and valid_evidence(source_text, event.evidence)
+            and not extraction.is_banter
+        ):
+            targets = [athlete]
+            # Shared changes are only accepted from the shared conversation.
+            if event.shared and public:
+                targets = (
+                    await session.scalars(select(Athlete).where(Athlete.active.is_(True)))
+                ).all()
+            for person in targets:
+                old = (
+                    await session.scalars(
+                        select(Event).where(
+                            Event.athlete_id == person.id,
+                            Event.status == "active",
+                            Event.shared_key == "guided-multipitch"
+                            if event.shared
+                            else Event.athlete_id == person.id,
+                        )
+                    )
+                ).all()
+                for e in old:
+                    e.status = "superseded"
+                prior_details = old[-1].details if old else {}
+                row = Event(
+                    athlete_id=person.id,
+                    name=event.name or "Guided multipitch trip",
+                    date=event.date,
+                    date_precision=event.date_precision,
+                    details={
+                        **prior_details,
+                        "date_label": event.date_label,
+                        "route_type": event.route_type or prior_details.get("route_type"),
+                        "guided": event.guided
+                        if event.guided is not None
+                        else prior_details.get("guided"),
+                    },
+                    evidence=event.evidence,
+                    source_message_ids=[message.id],
+                    visibility=visibility,
+                    shared_key="guided-multipitch" if event.shared else None,
                 )
-            ).all()
-            for active in active_events:
-                active.status = "superseded"
-            record = Event(
-                athlete_id=athlete.id,
-                name=event.name or (active_events[0].name if active_events else "Climbing goal"),
-                date=event.date,
-                date_precision=event.date_precision,
-                details={
-                    "date_label": event.date_label,
-                    "route_type": event.route_type,
-                    "guided": event.guided,
-                },
-                evidence=event_evidence,
-                source_message_ids=[message.id],
-            )
-            session.add(record)
-            profile = dict(athlete.profile)
-            profile["goals"] = [
-                f"{record.name}: {event.date_label or (event.date.isoformat() if event.date else 'date unknown')}"
-            ]
-            athlete.profile = profile
-            await session.flush()
-            mutations.append({"kind": "event", "id": record.id})
-        elif event.action != "none":
-            mutations.append({"kind": "event", "status": "rejected_no_current_evidence"})
-
-        plan = extraction.plan
-        plan_evidence = valid_evidence(source_text, plan.evidence)
-        if plan.action != "none" and plan_evidence:
-            record = await self._upsert_plan(
+                session.add(row)
+                await session.flush()
+                changes.append({"kind": "event", "id": row.id})
+                plans = (
+                    await session.scalars(
+                        select(Plan).where(Plan.athlete_id == person.id, Plan.status == "active")
+                    )
+                ).all()
+                for p in plans:
+                    p.content = {
+                        **p.content,
+                        "review_reason": "target_event_changed",
+                        "target_date_label": event.date_label,
+                    }
+        if extraction.plan.action != "none" and valid_evidence(
+            source_text, extraction.plan.evidence
+        ):
+            p = await self._upsert_plan(
                 session,
                 athlete_id=athlete.id,
-                candidate=plan,
+                candidate=extraction.plan,
                 source_message_id=message.id,
-                evidence=plan_evidence,
+                evidence=extraction.plan.evidence,
                 today=today,
             )
-            mutations.append({"kind": "plan", "id": record.id})
-        elif plan.action != "none":
-            mutations.append({"kind": "plan", "status": "rejected_no_current_evidence"})
-
+            changes.append({"kind": "plan", "id": p.id})
         await session.flush()
-        return mutations
+        return changes
 
     async def _upsert_plan(
         self,
@@ -685,56 +809,32 @@ class MessageProcessor:
         evidence: list[str],
         today: date,
     ) -> Plan:
-        current = await session.scalar(
-            select(Plan)
-            .where(Plan.athlete_id == athlete_id, Plan.status == "active")
-            .order_by(desc(Plan.created_at))
-            .limit(1)
-        )
-        content = {
-            "summary": candidate.summary,
-            "current_focus": candidate.focus,
-            "weekly_schedule": {
-                item.day: item.activity for item in candidate.weekly_schedule
-            },
-            "guardrails": candidate.guardrails,
-        }
-        if current is not None:
-            current.status = "superseded"
-            content = {**current.content, **{key: value for key, value in content.items() if value}}
+        current = (
+            await session.scalars(
+                select(Plan).where(Plan.athlete_id == athlete_id, Plan.status == "active")
+            )
+        ).all()
+        for p in current:
+            p.status = "superseded"
+        source = await session.get(Message, source_message_id)
+        public = source and source.telegram_chat_id == self.settings.telegram_allowed_chat_id
         record = Plan(
             athlete_id=athlete_id,
-            status="active",
             start_date=candidate.start_date or today,
-            end_date=candidate.end_date or (current.end_date if current else None),
-            content=content,
-            evidence=evidence,
+            end_date=candidate.end_date or (today + timedelta(days=6)),
+            content={
+                "summary": candidate.summary,
+                "current_focus": candidate.focus,
+                "weekly_schedule": {item.day: item.activity for item in candidate.weekly_schedule},
+                "guardrails": candidate.guardrails,
+            },
             source_message_ids=[source_message_id],
+            evidence=evidence,
+            visibility="group" if public else "private",
         )
         session.add(record)
         await session.flush()
         return record
-
-    async def _save_fact(
-        self,
-        session: AsyncSession,
-        athlete_id: int,
-        source_message_id: int,
-        field: str,
-        value: Any,
-        inferred: bool,
-        confidence: float,
-    ) -> Fact:
-        fact = Fact(
-            athlete_id=athlete_id,
-            field=field,
-            value=value,
-            source_message_id=source_message_id,
-            inferred=inferred,
-            confidence=confidence,
-        )
-        session.add(fact)
-        return fact
 
     async def _apply_correction(
         self,
@@ -749,72 +849,158 @@ class MessageProcessor:
             source_message_id=message.id,
             target_kind=candidate.target_kind,
             payload=candidate.model_dump(mode="json"),
+            status="needs_session_clarification",
         )
         session.add(correction)
-
-        if candidate.target_kind == "workout":
-            target_date = candidate.target_date or today
-            workout = await session.scalar(
-                select(Workout)
-                .where(
-                    Workout.athlete_id == athlete.id,
-                    Workout.date == target_date,
-                    Workout.status == "active",
-                )
-                .order_by(desc(Workout.created_at))
-                .limit(1)
+        if candidate.evidence and not valid_evidence(message.raw_text or "", candidate.evidence):
+            correction.status = "rejected_no_current_evidence"
+            await session.flush()
+            return correction
+        model = {
+            "workout": Workout,
+            "daily_state": DailyState,
+            "memory": Memory,
+            "fact": Fact,
+            "athlete": Fact,
+            "plan": Plan,
+            "event": Event,
+        }[candidate.target_kind]
+        query = select(model).where(model.athlete_id == athlete.id)
+        if candidate.target_id:
+            query = query.where(model.id == candidate.target_id)
+        elif hasattr(model, "date"):
+            query = query.where(model.date == (candidate.target_date or today))
+        elif candidate.field and model is Fact:
+            query = query.where(Fact.field == candidate.field)
+        else:
+            await session.flush()
+            return correction
+        if hasattr(model, "status"):
+            query = query.where(
+                model.status.not_in(["void", "retired", "superseded", "void_duplicate"])
             )
-            if workout:
-                if candidate.correct_athlete_name:
-                    corrected_athlete = await session.scalar(
-                        select(Athlete).where(Athlete.name == candidate.correct_athlete_name)
+        rows = (await session.scalars(query)).all()
+        if len(rows) != 1:
+            await session.flush()
+            return correction
+        target = rows[0]
+        before = {"type": candidate.target_kind, "id": target.id}
+        if model is Workout:
+            before.update(
+                {
+                    "athlete_id": target.athlete_id,
+                    "date": str(target.date),
+                    "details": target.structured_details,
+                    "notes": target.notes,
+                }
+            )
+            old_sources = list(target.source_message_ids)
+            # Validate ambiguous entry selection before making ANY mutations.
+            if candidate.field in {"grade", "original_grade"} and not candidate.negate:
+                matches = [
+                    e
+                    for e in target.entries
+                    if candidate.old_value is None or e.original_grade == str(candidate.old_value)
+                ]
+                if len(matches) != 1:
+                    await session.flush()
+                    return correction
+            if candidate.correct_athlete_name:
+                recipient = await session.scalar(
+                    select(Athlete).where(Athlete.name == candidate.correct_athlete_name)
+                )
+                if not recipient:
+                    await session.flush()
+                    return correction
+                target.athlete_id = recipient.id
+                await refresh_analytics_snapshots(session, recipient.id, today)
+            if candidate.negate:
+                target.status = "void"
+            elif candidate.field in {"grade", "original_grade"}:
+                matches = [
+                    e
+                    for e in target.entries
+                    if candidate.old_value is None or e.original_grade == str(candidate.old_value)
+                ]
+                if len(matches) != 1:
+                    await session.flush()
+                    return correction
+                e = matches[0]
+                e.grade_system, e.original_grade = normalize_grade(
+                    e.grade_system, str(candidate.new_value)
+                )
+                e.grade_rank = grade_rank(e.grade_system, e.original_grade)
+            elif candidate.field in {"duration_minutes", "rpe", "notes", "type", "date"}:
+                value = candidate.new_value
+                if candidate.field == "date":
+                    value = date.fromisoformat(str(value))
+                setattr(target, candidate.field, value)
+            elif candidate.field == "pain_status" and candidate.new_value in {
+                "unknown",
+                "reported",
+                "reported_none",
+            }:
+                target.pain_status = candidate.new_value
+            elif candidate.field:
+                target.structured_details = {
+                    **target.structured_details,
+                    candidate.field: candidate.new_value,
+                }
+            # A corrected session becomes a fresh baseline for subsequent appended contributions.
+            details = {**target.structured_details}
+            details.pop("contributions", None)
+            details["climbing"] = [entry_to_dict(e) for e in target.entries]
+            target.structured_details = details
+            target.source_message_ids = list(dict.fromkeys([*old_sources, message.id]))
+            target.fingerprint = None
+            await retire_related(session, athlete.id, old_sources)
+        elif model is DailyState and candidate.field:
+            before["values"] = target.values
+            target.values = {**target.values, candidate.field: candidate.new_value}
+        elif model is Memory:
+            before["summary"] = target.summary
+            if candidate.negate:
+                target.status = "retired"
+            elif candidate.new_value is not None:
+                target.summary = str(candidate.new_value)
+                target.confidence = min(candidate.confidence, 0.8)
+                target.source_message_ids = [*target.source_message_ids, message.id]
+        elif model is Fact:
+            before["value"] = target.value
+            target.status = "superseded"
+            if not candidate.negate and candidate.new_value is not None:
+                session.add(
+                    Fact(
+                        athlete_id=athlete.id,
+                        field=target.field,
+                        value=candidate.new_value,
+                        source_message_id=message.id,
+                        visibility=target.visibility,
+                        status="active",
                     )
-                    if corrected_athlete:
-                        workout.athlete_id = corrected_athlete.id
-                if candidate.negate:
-                    workout.status = "void"
-                elif candidate.field:
-                    if candidate.field in {"type", "duration_minutes", "rpe", "notes", "date"}:
-                        setattr(workout, candidate.field, candidate.new_value)
-                    elif candidate.field in {"grade", "original_grade"}:
-                        details = dict(workout.structured_details)
-                        climbing = [dict(item) for item in details.get("climbing", [])]
-                        for entry in reversed(climbing):
-                            if candidate.old_value is None or entry.get("original_grade") == str(
-                                candidate.old_value
-                            ):
-                                entry["original_grade"] = str(candidate.new_value)
-                                break
-                        details["climbing"] = climbing
-                        workout.structured_details = details
-                        for entry in reversed(workout.entries):
-                            if candidate.old_value is None or entry.original_grade == str(
-                                candidate.old_value
-                            ):
-                                entry.original_grade = str(candidate.new_value)
-                                entry.grade_rank = grade_rank(
-                                    entry.grade_system, entry.original_grade
-                                )
-                                break
-                    else:
-                        workout.structured_details = {
-                            **workout.structured_details,
-                            candidate.field: candidate.new_value,
-                        }
-                workout.fingerprint = fingerprint_existing(workout)
-                correction.target_id = workout.id
-                correction.status = "applied"
-        elif candidate.target_kind == "daily_state":
-            target_date = candidate.target_date or today
-            state = await session.scalar(
-                select(DailyState).where(
-                    DailyState.athlete_id == athlete.id, DailyState.date == target_date
                 )
-            )
-            if state and candidate.field:
-                state.values = {**state.values, candidate.field: candidate.new_value}
-                correction.target_id = state.id
-                correction.status = "applied"
-
+        elif model in {Plan, Event} and candidate.negate:
+            target.status = "superseded"
+        else:
+            await session.flush()
+            return correction
+        correction.target_id = target.id
+        correction.payload = {**correction.payload, "before": before}
+        correction.status = "applied"
         await session.flush()
         return correction
+
+
+def entry_to_dict(e: WorkoutEntry) -> dict:
+    return {
+        "discipline": e.discipline,
+        "grade_system": e.grade_system,
+        "original_grade": e.original_grade,
+        "count": e.count,
+        "completed": None if e.completed_count is None else e.completed_count > 0,
+        "attempts": e.attempts,
+        "route_length_m": e.route_length_m,
+        "notes": e.notes,
+        "wall_style": e.wall_style,
+        "movement_style": e.movement_style,
+    }

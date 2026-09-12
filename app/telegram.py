@@ -4,17 +4,22 @@ import asyncio
 import html
 import logging
 import re
-from datetime import UTC, datetime
+from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 
 from aiogram import Bot, Dispatcher, Router
 from aiogram.enums import ChatType, ParseMode
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import Message as TelegramMessage
-from aiogram.types import Video, VideoNote
+from aiogram.types import ReplyParameters, Video, VideoNote
+from sqlalchemy import func, or_, select
 
 from app.ai import AIService
 from app.config import Settings
+from app.db.models import FollowUp, Message, Outbox, ProcessingRun
 from app.db.session import Database
+from app.delivery import split_reply
 from app.services import IncomingMessage, MessageProcessor, is_directly_addressed
 from app.video import extract_video_frames
 
@@ -72,10 +77,7 @@ def should_process_video(text: str, *, chat_type: ChatType) -> bool:
     """Analyze private videos and group videos carrying an explicit request only."""
     if chat_type == ChatType.PRIVATE:
         return True
-    return bool(
-        is_directly_addressed(text)
-        or _VIDEO_ANALYSIS_REQUEST.search(text)
-    )
+    return bool(is_directly_addressed(text) or _VIDEO_ANALYSIS_REQUEST.search(text))
 
 
 def should_force_response(
@@ -88,9 +90,7 @@ def should_force_response(
 ) -> bool:
     if chat_type == ChatType.PRIVATE or media_requested:
         return True
-    if is_directly_addressed(
-        text, allow_transcription_aliases=allow_transcription_aliases
-    ):
+    if is_directly_addressed(text, allow_transcription_aliases=allow_transcription_aliases):
         return True
     return is_reply_to_bot and looks_like_actionable_request(text)
 
@@ -116,29 +116,35 @@ def compose_video_context(*, request: str, transcript: str | None, analysis: str
     return "\n\n".join(parts)
 
 
+class PermanentMediaError(RuntimeError):
+    pass
+
+
 class TelegramRuntime:
     def __init__(self, settings: Settings, database: Database, ai: AIService):
-        self.settings = settings
-        self.database = database
+        self.settings, self.database = settings, database
         self.bot = Bot(settings.telegram_bot_token)
         self.dispatcher = Dispatcher()
         self.router = Router()
         self.processor = MessageProcessor(settings, ai)
         self._task: asyncio.Task | None = None
+        self._worker: asyncio.Task | None = None
         self._bot_id: int | None = None
-        self.last_update_at: datetime | None = None
-        self.last_success_at: datetime | None = None
-        self.last_error: str | None = None
-        self.last_media_error: str | None = None
+        self._wake = asyncio.Event()
+        self._lock = asyncio.Lock()
+        self.last_update_at = self.last_success_at = None
+        self.last_error = self.last_media_error = None
         self.router.message.register(self._handle_message)
+        self.router.edited_message.register(self._handle_message)
         self.dispatcher.include_router(self.router)
 
     async def start(self) -> None:
         me = await self.bot.get_me()
         self._bot_id = me.id
-        logger.info("Starting Telegram polling as @%s", me.username)
+        self._worker = asyncio.create_task(self._work(), name="sam-worker")
         self._task = asyncio.create_task(
-            self.dispatcher.start_polling(self.bot, handle_signals=False),
+            # Do not acknowledge the next update until this handler has durably saved it.
+            self.dispatcher.start_polling(self.bot, handle_signals=False, handle_as_tasks=False),
             name="telegram-polling",
         )
         self._task.add_done_callback(self._polling_finished)
@@ -147,9 +153,10 @@ class TelegramRuntime:
     def polling_running(self) -> bool:
         return self._task is not None and not self._task.done()
 
-    def health_details(self) -> dict[str, str | bool | None]:
+    def health_details(self) -> dict:
         return {
             "polling_running": self.polling_running,
+            "worker_running": self._worker is not None and not self._worker.done(),
             "last_update_at": self.last_update_at.isoformat() if self.last_update_at else None,
             "last_success_at": self.last_success_at.isoformat() if self.last_success_at else None,
             "last_error": self.last_error,
@@ -157,55 +164,23 @@ class TelegramRuntime:
         }
 
     def _polling_finished(self, task: asyncio.Task) -> None:
-        if task.cancelled():
-            return
-        error = task.exception()
-        if error is not None:
-            self.last_error = f"polling: {type(error).__name__}: {error}"
-            logger.error("Telegram polling stopped: %s", error)
+        if not task.cancelled() and task.exception():
+            self.last_error = f"polling:{type(task.exception()).__name__}"
 
     async def stop(self) -> None:
-        await self.dispatcher.stop_polling()
+        if self.polling_running:
+            await self.dispatcher.stop_polling()
+        if self._worker:
+            self._worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._worker
         if self._task:
-            await self._task
+            with suppress(asyncio.CancelledError):
+                await self._task
         await self.bot.session.close()
 
-    async def _record_media_outcome(
-        self,
-        message: TelegramMessage,
-        *,
-        text: str,
-        message_type: str,
-        attachment: dict,
-        status: str,
-        reason: str,
-        transcript: str | None = None,
-    ) -> None:
-        if message.from_user is None:
-            return
-        incoming = IncomingMessage(
-            telegram_message_id=message.message_id,
-            telegram_chat_id=message.chat.id,
-            telegram_user_id=message.from_user.id,
-            timestamp=message.date,
-            text=text,
-            transcript=transcript,
-            message_type=message_type,
-            reply_to_message_id=(
-                message.reply_to_message.message_id if message.reply_to_message else None
-            ),
-            attachment_metadata=attachment,
-        )
-        async with self.database.sessions() as session:
-            await self.processor.record_unprocessed(
-                session,
-                incoming,
-                status=status,
-                reason=reason,
-            )
-
     async def _handle_message(self, message: TelegramMessage) -> None:
-        if message.from_user is None or message.from_user.is_bot:
+        if not message.from_user or message.from_user.is_bot:
             return
         if not is_allowed_chat(
             self.settings,
@@ -213,237 +188,388 @@ class TelegramRuntime:
             chat_type=message.chat.type,
             user_id=message.from_user.id,
         ):
-            logger.warning("Ignoring update from non-allowlisted chat %s", message.chat.id)
             return
-        video, video_message = find_video(message)
-        if not (message.text or message.caption or message.voice or video):
-            return
-        self.last_update_at = datetime.now(UTC)
-
         if message.text and message.text.split("@", 1)[0].strip().lower() == "/whoami":
             await message.reply(f"Твой Telegram user ID: {message.from_user.id}")
             return
+        if message.from_user.id not in known_user_ids(self.settings):
+            return
+        self.last_update_at = datetime.now(UTC)
+        # Serialize ingestion and processing for this small group, including edits.
+        async with self._lock:  # noqa: SIM117 - keep ingestion transaction scope explicit
+            async with self.database.sessions() as session:
+                row = await session.scalar(
+                    select(Message).where(
+                        Message.telegram_chat_id == message.chat.id,
+                        Message.telegram_message_id == message.message_id,
+                    )
+                )
+                payload = message.model_dump(mode="json", exclude_none=True)
+                if row:
+                    old = row.attachment_data.get("telegram_payload", {})
+                    if not message.edit_date or old.get("edit_date") == payload.get("edit_date"):
+                        return
+                    history = list(row.processing_data.get("edit_history", []))
+                    history.append(
+                        {
+                            "revision": row.revision,
+                            "text": row.raw_text,
+                            "transcript": row.transcript,
+                        }
+                    )
+                    row.processing_data = {"edit_history": history, "is_edit": True}
+                    row.revision += 1
+                    row.raw_text = message.text or message.caption or ""
+                    row.transcript = None
+                    row.embedding = None
+                    row.attachment_data = {"telegram_payload": payload}
+                    run = await session.scalar(
+                        select(ProcessingRun).where(ProcessingRun.message_id == row.id)
+                    )
+                    if run:
+                        run.status, run.attempts, run.next_attempt_at = "received", 0, None
+                    else:
+                        session.add(ProcessingRun(message_id=row.id, status="received"))
+                    pending = (
+                        await session.scalars(
+                            select(Outbox).where(
+                                Outbox.source_message_id == row.id,
+                                Outbox.status.in_(["pending", "retry"]),
+                            )
+                        )
+                    ).all()
+                    for item in pending:
+                        item.status = "superseded"
+                    questions = (
+                        await session.scalars(
+                            select(FollowUp).where(
+                                FollowUp.source_message_id == row.id,
+                                FollowUp.status.in_(["pending", "awaiting_delivery"]),
+                            )
+                        )
+                    ).all()
+                    for question in questions:
+                        question.status = "superseded"
+                    await session.commit()
+                else:
+                    incoming = IncomingMessage(
+                        telegram_message_id=message.message_id,
+                        telegram_chat_id=message.chat.id,
+                        telegram_user_id=message.from_user.id,
+                        timestamp=message.date,
+                        text=message.text or message.caption or "",
+                        message_type=message.content_type,
+                        reply_to_message_id=message.reply_to_message.message_id
+                        if message.reply_to_message
+                        else None,
+                        attachment_metadata={"telegram_payload": payload},
+                    )
+                    await self.processor.record_unprocessed(
+                        session, incoming, status="received", reason="queued"
+                    )
+        self._wake.set()
 
+    async def _work(self) -> None:
+        while True:
+            try:
+                async with self._lock:
+                    await self._process_next()
+                    await self._deliver_next()
+                self._wake.clear()
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(self._wake.wait(), timeout=2)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - keep the durable worker alive
+                self.last_error = type(exc).__name__
+                logger.error("Worker operation failed: %s", type(exc).__name__)
+                await asyncio.sleep(2)
+
+    async def _process_next(self) -> None:
+        async with self.database.sessions() as session:
+            row = await session.scalar(
+                select(Message)
+                .join(ProcessingRun)
+                .where(
+                    ProcessingRun.status.in_(["received", "started", "retry"]),
+                    or_(
+                        ProcessingRun.next_attempt_at.is_(None),
+                        ProcessingRun.next_attempt_at <= datetime.now(UTC),
+                    ),
+                )
+                .order_by(Message.telegram_timestamp, Message.id)
+                .limit(1)
+            )
+            if not row:
+                return
+            row_id = row.id
+            incoming = None
+            try:
+                payload = row.attachment_data.get("telegram_payload")
+                if payload:
+                    telegram = TelegramMessage.model_validate(payload)
+                    incoming = await self._prepare(telegram, row)
+                else:
+                    # Historical interrupted text/voice processing can be recovered too.
+                    incoming = IncomingMessage(
+                        telegram_message_id=row.telegram_message_id,
+                        telegram_chat_id=row.telegram_chat_id,
+                        telegram_user_id=row.telegram_user_id,
+                        timestamp=row.telegram_timestamp,
+                        text=row.raw_text or row.transcript or row.normalized_text or "",
+                        message_type=row.message_type,
+                        transcript=row.transcript,
+                        reply_to_message_id=row.reply_to_message_id,
+                    )
+                if incoming is None:
+                    run = await session.scalar(
+                        select(ProcessingRun).where(ProcessingRun.message_id == row_id)
+                    )
+                    run.status, run.error = "completed", None
+                    await session.commit()
+                else:
+                    incoming.is_edit = bool(row.processing_data.get("is_edit"))
+                    # Persist successful transcription/analysis before the next API operation.
+                    row.attachment_data = {
+                        **row.attachment_data,
+                        **(incoming.attachment_metadata or {}),
+                    }
+                    row.transcript = incoming.transcript
+                    await session.commit()
+                    await self.processor.process(session, incoming)
+                    row.processing_data = {**row.processing_data, "is_edit": False}
+                    await session.commit()
+                self.last_success_at, self.last_error = datetime.now(UTC), None
+            except PermanentMediaError as exc:
+                run = await session.scalar(
+                    select(ProcessingRun).where(ProcessingRun.message_id == row_id)
+                )
+                run.status, run.error = "failed", "unsupported_media"
+                self.last_media_error = "unsupported_media"
+                # Explicitly requested unsupported media gets a durable explanation.
+                session.add(
+                    Outbox(
+                        source_message_id=row_id,
+                        revision=row.revision,
+                        athlete_id=row.athlete_id,
+                        telegram_chat_id=row.telegram_chat_id,
+                        reply_to_message_id=row.telegram_message_id,
+                        text=str(exc),
+                    )
+                )
+                await session.commit()
+            except Exception as exc:  # noqa: BLE001 - classify media/provider failures for retry
+                await session.rollback()
+                run = await session.scalar(
+                    select(ProcessingRun).where(ProcessingRun.message_id == row_id)
+                )
+                if run and run.status not in {"retry", "failed"}:
+                    run.attempts += 1
+                    run.status = "failed" if run.attempts >= 5 else "retry"
+                    run.error = type(exc).__name__
+                    run.next_attempt_at = datetime.now(UTC) + timedelta(
+                        seconds=min(300, 5 * 2**run.attempts)
+                    )
+                    await session.commit()
+                self.last_error = f"processing:{type(exc).__name__}"
+                logger.warning("Message %s processing deferred: %s", row_id, type(exc).__name__)
+
+    async def _prepare(self, message: TelegramMessage, row: Message) -> IncomingMessage | None:
         text = message.text or message.caption or ""
-        is_reply_to_bot = bool(
+        attachment = dict(row.attachment_data)
+        transcript = row.transcript
+        video, source = find_video(message)
+        if not video:
+            for candidate in [message, message.reply_to_message]:
+                if (
+                    candidate
+                    and candidate.document
+                    and (candidate.document.mime_type or "").startswith("video/")
+                ):
+                    video, source = candidate.document, candidate
+                    break
+        requested = bool(video and should_process_video(text, chat_type=message.chat.type))
+        circular = bool(source.video_note) if source else False
+        if video and not requested and not circular:
+            if source is message:
+                attachment["media_status"] = "ignored_not_requested"
+                row.attachment_data = attachment
+                return None
+            video = None
+        if message.photo and not text:
+            if message.chat.id < 0:
+                return None
+            raise PermanentMediaError(
+                "Фото сохранил, но разбор скриншотов пока не подключён. Нужные показатели можно написать или наговорить."
+            )
+        if message.voice:
+            if transcript is None:
+                buffer = BytesIO()
+                await self.bot.download(message.voice, destination=buffer)
+                transcript = await self.processor.ai.transcribe(buffer.getvalue())
+                attachment.update(
+                    file_id=message.voice.file_id,
+                    transcription_model=self.settings.transcription_model,
+                )
+            text = transcript
+        elif video:
+            size = getattr(video, "file_size", None)
+            attachment.update(
+                file_id=video.file_id,
+                telegram_file_size_bytes=size,
+                source_message_id=source.message_id,
+            )
+            if size and size > TELEGRAM_DOWNLOAD_LIMIT_BYTES:
+                raise PermanentMediaError(
+                    f"Видео весит {size / 1048576:.1f} MB. Telegram отдаёт этому боту файлы до 20 MB; "
+                    "пришли короткий фрагмент или сжатую версию."
+                )
+            analysis = attachment.get("vision_analysis") if requested else None
+            if (requested and not analysis) or (circular and transcript is None):
+                buffer = BytesIO()
+                await self.bot.download(video, destination=buffer)
+                video_bytes = buffer.getvalue()
+                if circular:
+                    transcript = await self.processor.ai.transcribe(
+                        video_bytes, filename="video.mp4"
+                    )
+                if requested:
+                    frames = await extract_video_frames(
+                        video_bytes,
+                        duration_seconds=getattr(video, "duration", None),
+                        max_frames=self.settings.video_max_frames,
+                    )
+                    analysis = await self.processor.ai.analyze_video_frames(
+                        frames,
+                        caption=text,
+                        transcript=transcript or "",
+                        safety_identifier=f"telegram-video-{message.from_user.id}",
+                    )
+                    attachment.update(vision_analysis=analysis, analyzed_frame_count=len(frames))
+            if requested:
+                text = compose_video_context(
+                    request=text, transcript=transcript, analysis=analysis or ""
+                )
+            else:
+                text = transcript or ""
+            attachment["media_status"] = "analyzed" if requested else "transcribed"
+        if not text:
+            return None
+        reply_to_bot = bool(
             message.reply_to_message
             and message.reply_to_message.from_user
             and message.reply_to_message.from_user.id == self._bot_id
         )
-        current_message_has_video = bool(message.video or message.video_note)
-        video_requested = bool(video and should_process_video(text, chat_type=message.chat.type))
-        if video and not video_requested:
-            if current_message_has_video:
-                message_type = "video_note" if message.video_note else "video"
-                attachment = {
-                    "file_id": video.file_id,
-                    "file_unique_id": video.file_unique_id,
-                    "telegram_file_size_bytes": getattr(video, "file_size", None),
-                    "duration_seconds": getattr(video, "duration", None),
-                    "media_status": "ignored_not_requested",
-                }
-                await self._record_media_outcome(
-                    message,
-                    text=text,
-                    message_type=message_type,
-                    attachment=attachment,
-                    status="completed",
-                    reason="video_ignored_not_requested",
-                )
-                self.last_success_at = datetime.now(UTC)
-                return
-            # A casual text reply to somebody else's video remains a normal text message.
-            video = None
-
-        transcript = None
-        attachment: dict = {}
-        message_type = "text"
-        if message.voice:
-            message_type = "voice"
-            buffer = BytesIO()
-            await self.bot.download(message.voice, destination=buffer)
-            audio = buffer.getvalue()
-            attachment = {
-                "file_id": message.voice.file_id,
-                "file_unique_id": message.voice.file_unique_id,
-                "duration_seconds": message.voice.duration,
-                "mime_type": message.voice.mime_type,
-                "size_bytes": len(audio),
-                "transcription_model": self.settings.transcription_model,
-            }
-            try:
-                transcript = await self.processor.ai.transcribe(audio)
-                text = transcript
-            except Exception:
-                logger.exception("Voice transcription failed")
-                await message.reply(
-                    "Не смог нормально разобрать голосовое. Можешь повторить текстом?"
-                )
-                return
-
-        if video:
-            if message.from_user.id not in known_user_ids(self.settings):
-                return
-
-            message_type = "video_note" if video_message.video_note else "video"
-            telegram_file_size = getattr(video, "file_size", None)
-            attachment = {
-                "file_id": video.file_id,
-                "file_unique_id": video.file_unique_id,
-                "telegram_file_size_bytes": telegram_file_size,
-                "duration_seconds": getattr(video, "duration", None),
-                "source_message_id": video_message.message_id,
-            }
-            if telegram_file_size and telegram_file_size > TELEGRAM_DOWNLOAD_LIMIT_BYTES:
-                size_mb = telegram_file_size / (1024 * 1024)
-                reason = (
-                    f"telegram_file_too_large: {telegram_file_size} bytes exceeds "
-                    f"{TELEGRAM_DOWNLOAD_LIMIT_BYTES} byte Bot API limit"
-                )
-                attachment["media_status"] = "failed_too_large"
-                await self._record_media_outcome(
-                    message,
-                    text=text,
-                    message_type=message_type,
-                    attachment=attachment,
-                    status="failed",
-                    reason=reason,
-                )
-                self.last_media_error = reason
-                await message.reply(
-                    f"Видео весит {size_mb:.1f} MB, а Telegram отдаёт обычному боту "
-                    "файлы только до 20 MB. Пришли более короткую или сжатую версию."
-                )
-                return
-
-            buffer = BytesIO()
-            try:
-                await self.bot.download(video, destination=buffer)
-                video_bytes = buffer.getvalue()
-            except Exception as exc:
-                reason = f"telegram_video_download_failed: {type(exc).__name__}: {exc}"
-                attachment["media_status"] = "failed_download"
-                await self._record_media_outcome(
-                    message,
-                    text=text,
-                    message_type=message_type,
-                    attachment=attachment,
-                    status="failed",
-                    reason=reason,
-                )
-                self.last_media_error = reason
-                logger.exception(
-                    "Telegram video download failed: message=%s file_size=%s",
-                    message.message_id,
-                    telegram_file_size,
-                )
-                await message.reply(
-                    "Не смог скачать запрошенное видео из Telegram. Ошибку и параметры файла "
-                    "сохранил; повторная отправка нужна только после проверки причины."
-                )
-                return
-
-            filename = getattr(video, "file_name", None) or f"{message_type}.mp4"
-            duration = getattr(video, "duration", None)
-            attachment = {
-                **attachment,
-                "duration_seconds": duration,
-                "mime_type": getattr(video, "mime_type", None) or "video/mp4",
-                "size_bytes": len(video_bytes),
-                "source_message_id": video_message.message_id,
-                "transcription_model": self.settings.transcription_model,
-                "vision_model": self.settings.sam_model,
-            }
-
-            try:
-                transcript = await self.processor.ai.transcribe(video_bytes, filename=filename)
-            except Exception as exc:  # noqa: BLE001 - a silent video is still useful
-                logger.info("Video audio transcription unavailable: %s", exc)
-                attachment["transcription_status"] = "unavailable"
-
-            try:
-                frames = await extract_video_frames(
-                    video_bytes,
-                    duration_seconds=duration,
-                    max_frames=self.settings.video_max_frames,
-                )
-                analysis = await self.processor.ai.analyze_video_frames(
-                    frames,
-                    caption=text,
-                    transcript=transcript or "",
-                    safety_identifier=f"telegram-video-{message.from_user.id}",
-                )
-            except Exception as exc:
-                reason = f"video_frame_analysis_failed: {type(exc).__name__}: {exc}"
-                attachment["media_status"] = "failed_analysis"
-                await self._record_media_outcome(
-                    message,
-                    text=text,
-                    message_type=message_type,
-                    attachment=attachment,
-                    status="failed",
-                    reason=reason,
-                    transcript=transcript,
-                )
-                self.last_media_error = reason
-                logger.exception("Video frame analysis failed")
-                await message.reply(
-                    "Не смог нормально разобрать кадры из видео. Попробуй другой файл или ракурс."
-                )
-                return
-
-            attachment["analyzed_frame_count"] = len(frames)
-            attachment["vision_analysis"] = analysis
-            attachment["media_status"] = "analyzed"
-            self.last_media_error = None
-            text = compose_video_context(request=text, transcript=transcript, analysis=analysis)
-
-        addressed = should_force_response(
-            text,
-            chat_type=message.chat.type,
-            is_reply_to_bot=is_reply_to_bot,
-            allow_transcription_aliases=message_type == "voice",
-            media_requested=video_requested,
-        )
-        incoming = IncomingMessage(
+        return IncomingMessage(
             telegram_message_id=message.message_id,
             telegram_chat_id=message.chat.id,
             telegram_user_id=message.from_user.id,
             timestamp=message.date,
             text=text,
             transcript=transcript,
-            message_type=message_type,
-            reply_to_message_id=(
-                message.reply_to_message.message_id if message.reply_to_message else None
-            ),
+            message_type="voice"
+            if message.voice
+            else ("video_note" if circular else ("video" if video else "text")),
+            reply_to_message_id=message.reply_to_message.message_id
+            if message.reply_to_message
+            else None,
             attachment_metadata=attachment,
-            is_reply_to_sam=addressed,
+            is_reply_to_sam=should_force_response(
+                text,
+                chat_type=message.chat.type,
+                is_reply_to_bot=reply_to_bot,
+                allow_transcription_aliases=bool(message.voice or circular),
+                media_requested=requested,
+            ),
         )
-        try:
-            async with self.database.sessions() as session:
-                result = await self.processor.process(session, incoming)
-            self.last_success_at = datetime.now(UTC)
-            self.last_error = None
-            if result.reply and result.athlete_id:
-                sent = await message.reply(
-                    format_telegram_reply(result.reply),
-                    parse_mode=ParseMode.HTML,
+
+    async def _deliver_next(self) -> None:
+        async with self.database.sessions() as session:
+            item = await session.scalar(
+                select(Outbox)
+                .where(
+                    Outbox.status.in_(["pending", "retry"]),
+                    or_(
+                        Outbox.next_attempt_at.is_(None),
+                        Outbox.next_attempt_at <= datetime.now(UTC),
+                    ),
                 )
-                async with self.database.sessions() as session:
+                .order_by(Outbox.id)
+                .limit(1)
+            )
+            if item is None:
+                return
+            parts = split_reply(item.text)
+            item.attempts += 1
+            await session.commit()
+            try:
+                for part in parts[len(item.sent_message_ids) :]:
+                    sent = await self.bot.send_message(
+                        chat_id=item.telegram_chat_id,
+                        text=format_telegram_reply(part),
+                        parse_mode=ParseMode.HTML,
+                        reply_parameters=ReplyParameters(
+                            message_id=item.reply_to_message_id, allow_sending_without_reply=True
+                        ),
+                    )
+                    item.sent_message_ids = [*item.sent_message_ids, sent.message_id]
                     await self.processor.save_outgoing(
                         session,
                         telegram_message_id=sent.message_id,
-                        telegram_chat_id=sent.chat.id,
-                        athlete_id=result.athlete_id,
-                        text=result.reply,
+                        telegram_chat_id=item.telegram_chat_id,
+                        athlete_id=item.athlete_id,
+                        text=part,
                         timestamp=sent.date,
+                        reply_to_message_id=item.reply_to_message_id,
                     )
-        except Exception as exc:
-            self.last_error = f"message {message.message_id}: {type(exc).__name__}: {exc}"
-            logger.exception(
-                "Message processing failed for Telegram message %s", message.message_id
-            )
-            if addressed:
-                await message.reply(
-                    "Не обработал это сообщение — записал ошибку. Попробуй ещё раз чуть позже."
+                item.status, item.error = "sent", None
+                questions = (
+                    await session.scalars(
+                        select(FollowUp).where(
+                            FollowUp.source_message_id == item.source_message_id,
+                            FollowUp.status == "awaiting_delivery",
+                        )
+                    )
+                ).all()
+                for question in questions:
+                    question.status = "pending"
+                self.last_error = None
+                await session.commit()
+            except Exception as exc:  # noqa: BLE001 - durable delivery failure accounting
+                item.error = type(exc).__name__
+                item.status = (
+                    "failed"
+                    if isinstance(exc, TelegramBadRequest) or item.attempts >= 5
+                    else "retry"
                 )
+                delay = (
+                    exc.retry_after
+                    if isinstance(exc, TelegramRetryAfter)
+                    else min(300, 5 * 2**item.attempts)
+                )
+                item.next_attempt_at = datetime.now(UTC) + timedelta(seconds=delay)
+                await session.commit()
+                self.last_error = f"delivery:{type(exc).__name__}"
+
+    async def queue_health(self) -> dict:
+        async with self.database.sessions() as session:
+            pending = await session.scalar(
+                select(func.count())
+                .select_from(ProcessingRun)
+                .where(ProcessingRun.status.in_(["received", "started", "retry"]))
+            )
+            failed = await session.scalar(
+                select(func.count())
+                .select_from(ProcessingRun)
+                .where(ProcessingRun.status == "failed")
+            )
+            unsent = await session.scalar(
+                select(func.count())
+                .select_from(Outbox)
+                .where(Outbox.status.in_(["pending", "retry", "failed"]))
+            )
+            return {
+                "pending_messages": pending,
+                "failed_messages": failed,
+                "unsent_replies": unsent,
+            }

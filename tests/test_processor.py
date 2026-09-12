@@ -76,7 +76,8 @@ async def test_workout_memory_and_reply_are_personalized(database, settings):
     assert workout.structured_details["pump"] == 6
     assert workout.structured_details["climbing"][0]["original_grade"] == "5.9"
     assert "Alexey" in ai.coach_contexts[0]
-    assert "Andrey" not in ai.coach_contexts[0]
+    assert "SHARED TRAINING OVERVIEW" in ai.coach_contexts[0]
+    assert workout.athlete_id == result.athlete_id
 
 
 async def test_duplicate_telegram_delivery_is_idempotent(database, settings):
@@ -87,7 +88,9 @@ async def test_duplicate_telegram_delivery_is_idempotent(database, settings):
     async with database.sessions() as session:
         first = await processor.process(session, update)
         second = await processor.process(session, update)
-        count = await session.scalar(select(func.count(Message.id)))
+        count = await session.scalar(
+            select(func.count(Message.id)).where(Message.direction == "incoming")
+        )
 
     assert first.duplicate is False
     assert second.duplicate is True
@@ -100,7 +103,9 @@ async def test_unknown_user_is_not_persisted(database, settings):
     )
     async with database.sessions() as session:
         result = await processor.process(session, incoming(8, 999, "Сэм, привет"))
-        count = await session.scalar(select(func.count(Message.id)))
+        count = await session.scalar(
+            select(func.count(Message.id)).where(Message.direction == "incoming")
+        )
     assert result.ignored_unknown_user is True
     assert count == 0
 

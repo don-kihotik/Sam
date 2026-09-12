@@ -55,6 +55,7 @@ class Message(Base):
     reply_to_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     direction: Mapped[str] = mapped_column(String(16), default="incoming")
     message_type: Mapped[str] = mapped_column(String(24), default="text")
+    revision: Mapped[int] = mapped_column(Integer, default=1)
     raw_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     normalized_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -108,7 +109,8 @@ class WorkoutEntry(Base):
     grade_system: Mapped[str | None] = mapped_column(String(20), nullable=True)
     original_grade: Mapped[str | None] = mapped_column(String(30), nullable=True)
     grade_rank: Mapped[float | None] = mapped_column(Float, nullable=True)
-    count: Mapped[int] = mapped_column(Integer, default=1)
+    count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    route_length_m: Mapped[float | None] = mapped_column(Float, nullable=True)
     completed_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     attempts: Mapped[int | None] = mapped_column(Integer, nullable=True)
     wall_style: Mapped[str | None] = mapped_column(String(80), nullable=True)
@@ -143,6 +145,8 @@ class Fact(Base):
     value: Mapped[Any] = mapped_column(JSON)
     source_message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"))
     inferred: Mapped[bool] = mapped_column(Boolean, default=False)
+    visibility: Mapped[str] = mapped_column(String(16), default="private")
+    status: Mapped[str] = mapped_column(String(16), default="active")
     confidence: Mapped[float] = mapped_column(Float, default=1)
     superseded_by_id: Mapped[int | None] = mapped_column(ForeignKey("facts.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -166,6 +170,7 @@ class Memory(Base):
     athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), index=True)
     date: Mapped[date] = mapped_column(Date, index=True)
     kind: Mapped[str] = mapped_column(String(20))
+    visibility: Mapped[str] = mapped_column(String(16), default="private")
     summary: Mapped[str] = mapped_column(Text)
     tags: Mapped[list[str]] = mapped_column(JSON, default=list)
     source_message_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
@@ -185,6 +190,7 @@ class Plan(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), index=True)
     status: Mapped[str] = mapped_column(String(20), default="active")
+    visibility: Mapped[str] = mapped_column(String(16), default="private")
     start_date: Mapped[date] = mapped_column(Date)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     content: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -202,6 +208,8 @@ class Event(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), index=True)
     name: Mapped[str] = mapped_column(String(200))
+    visibility: Mapped[str] = mapped_column(String(16), default="private")
+    shared_key: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
     date: Mapped[date | None] = mapped_column(Date, nullable=True)
     date_precision: Mapped[str] = mapped_column(String(20), default="exact")
     details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -268,6 +276,8 @@ class ProcessingRun(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"), unique=True)
     status: Mapped[str] = mapped_column(String(20), default="started")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     extraction_model: Mapped[str | None] = mapped_column(String(100))
     coaching_model: Mapped[str | None] = mapped_column(String(100))
     prompt_version: Mapped[str] = mapped_column(String(40), default="v1")
@@ -278,3 +288,36 @@ class ProcessingRun(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+class Outbox(Base):
+    __tablename__ = "outbox"
+    __table_args__ = (UniqueConstraint("source_message_id", "revision"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"), index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"))
+    telegram_chat_id: Mapped[int] = mapped_column(BigInteger)
+    reply_to_message_id: Mapped[int] = mapped_column(BigInteger)
+    text: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    sent_message_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class FollowUp(Base):
+    __tablename__ = "follow_ups"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), index=True)
+    telegram_chat_id: Mapped[int] = mapped_column(BigInteger)
+    source_message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"))
+    workout_id: Mapped[int | None] = mapped_column(ForeignKey("workouts.id"), nullable=True)
+    question: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

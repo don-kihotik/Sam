@@ -14,7 +14,7 @@ from app.prompts import (
     TRANSCRIPTION_PROMPT,
     VIDEO_ANALYSIS_SYSTEM_PROMPT,
 )
-from app.schemas import CoachArtifacts, MessageExtraction
+from app.schemas import CoachArtifacts, CoachReply, MessageExtraction
 
 
 class AIService:
@@ -23,7 +23,7 @@ class AIService:
         self.client = client or AsyncOpenAI(
             api_key=settings.openai_api_key,
             timeout=120.0,
-            max_retries=0,
+            max_retries=2,
         )
 
     async def extract(
@@ -64,6 +64,19 @@ class AIService:
         if not text:
             raise RuntimeError("Coaching model returned an empty response")
         return text
+
+    async def coach_reply(self, *, context: str, safety_identifier: str) -> CoachReply:
+        response = await self.client.responses.parse(
+            model=self.settings.sam_model,
+            instructions=SAM_SYSTEM_PROMPT,
+            input=context,
+            text_format=CoachReply,
+            store=False,
+            safety_identifier=safety_identifier[:64],
+        )
+        if response.output_parsed is None or not response.output_parsed.text.strip():
+            raise RuntimeError("No structured coaching reply")
+        return response.output_parsed
 
     async def extract_coach_artifacts(self, text: str) -> CoachArtifacts:
         response = await self.client.responses.parse(
@@ -153,6 +166,11 @@ class FakeAIService:
     async def coach(self, *, context: str, safety_identifier: str) -> str:
         self.coach_contexts.append(context)
         return self.reply
+
+    async def coach_reply(self, *, context: str, safety_identifier: str) -> CoachReply:
+        return CoachReply(
+            text=await self.coach(context=context, safety_identifier=safety_identifier)
+        )
 
     async def extract_coach_artifacts(self, text: str) -> CoachArtifacts:
         return CoachArtifacts()

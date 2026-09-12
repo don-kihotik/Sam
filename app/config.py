@@ -8,14 +8,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    telegram_bot_token: str = ""
+    telegram_bot_token: str = Field(default="", repr=False)
     telegram_allowed_chat_id: int | None = None
     alexey_telegram_user_id: int | None = None
     andrey_telegram_user_id: int | None = None
     telegram_enabled: bool = True
 
-    openai_api_key: str = ""
-    database_url: str = "sqlite+aiosqlite:///./sam.sqlite3"
+    openai_api_key: str = Field(default="", repr=False)
+    database_url: str = Field(default="sqlite+aiosqlite:///./sam.sqlite3", repr=False)
 
     sam_model: str = "gpt-5.4-mini"
     extraction_model: str = "gpt-5.4-mini"

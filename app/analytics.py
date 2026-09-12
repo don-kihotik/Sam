@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from datetime import date, timedelta
 from typing import Any
 
@@ -9,26 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.models import AnalyticsSnapshot, Workout
+from app.grades import grade_rank
 
-
-def grade_rank(system: str | None, grade: str | None) -> float | None:
-    if not grade:
-        return None
-    value = grade.strip().upper()
-    if (system or "").upper() in {"V", "HUECO"} or value.startswith("V"):
-        match = re.fullmatch(r"V(\d+)", value)
-        return float(match.group(1)) if match else None
-    match = re.fullmatch(r"5\.(\d+)([ABCD])?([+-])?", value)
-    if not match:
-        return None
-    rank = float(match.group(1))
-    if match.group(2):
-        rank += {"A": 0.1, "B": 0.3, "C": 0.6, "D": 0.8}[match.group(2)]
-    if match.group(3) == "+":
-        rank += 0.05
-    elif match.group(3) == "-":
-        rank -= 0.05
-    return rank
+__all__ = ["analytics_windows", "grade_rank", "refresh_analytics_snapshots"]
 
 
 def _metrics(workouts: list[Workout]) -> dict[str, Any]:
@@ -38,6 +20,10 @@ def _metrics(workouts: list[Workout]) -> dict[str, Any]:
     pumps: list[float] = []
     loads: list[float] = []
     max_grades: dict[str, tuple[float, str]] = {}
+    attempted_grades: dict[str, tuple[float, str]] = {}
+    vertical_metres = 0.0
+    length_known = 0
+    count_unknown = 0
     total_climbs = 0
     completed_climbs = 0
     for workout in workouts:
@@ -49,32 +35,51 @@ def _metrics(workouts: list[Workout]) -> dict[str, Any]:
         if isinstance(pump, (int, float)):
             pumps.append(float(pump))
         for entry in workout.entries:
-            count = entry.count or 1
+            count = entry.count or 0
+            count_unknown += entry.count is None
             total_climbs += count
             if entry.completed_count is not None:
                 completed_climbs += entry.completed_count
+                if entry.route_length_m is not None:
+                    vertical_metres += entry.route_length_m * entry.completed_count
+                    length_known += entry.completed_count
             discipline = entry.discipline or "unknown"
             discipline_counts[discipline] = discipline_counts.get(discipline, 0) + count
             if entry.original_grade:
                 grade_distribution[entry.original_grade] = (
                     grade_distribution.get(entry.original_grade, 0) + count
                 )
-                rank = entry.grade_rank
+                rank = grade_rank(entry.grade_system, entry.original_grade)
                 if rank is not None:
-                    current = max_grades.get(discipline)
+                    key = f"{discipline}/{entry.grade_system}"
+                    current = attempted_grades.get(key)
                     if current is None or rank > current[0]:
-                        max_grades[discipline] = (rank, entry.original_grade)
+                        attempted_grades[key] = (rank, entry.original_grade)
+                    if entry.completed_count and entry.completed_count > 0:
+                        current = max_grades.get(key)
+                        if current is None or rank > current[0]:
+                            max_grades[key] = (rank, entry.original_grade)
+    duration_known = [w.duration_minutes for w in workouts if w.duration_minutes is not None]
     return {
         "sessions": len(workouts),
-        "duration_minutes": sum(w.duration_minutes or 0 for w in workouts),
+        "duration_minutes": sum(duration_known) if duration_known else None,
+        "duration_known_sessions": len(duration_known),
+        "duration_unknown_sessions": len(workouts) - len(duration_known),
+        "unknown_count_entries": count_unknown,
         "total_climbs": total_climbs,
         "completed_climbs": completed_climbs,
+        "completed_vertical_metres": vertical_metres if length_known else None,
+        "length_known_completed_climbs": length_known,
         "discipline_counts": discipline_counts,
         "grade_distribution": grade_distribution,
         "max_grade_by_discipline": {key: value[1] for key, value in max_grades.items()},
+        "max_attempted_grade_by_discipline": {
+            key: value[1] for key, value in attempted_grades.items()
+        },
         "average_rpe": round(sum(rpes) / len(rpes), 2) if rpes else None,
         "average_pump": round(sum(pumps) / len(pumps), 2) if pumps else None,
-        "session_load": round(sum(loads), 1),
+        "session_load": round(sum(loads), 1) if loads else None,
+        "load_known_sessions": len(loads),
         "pain_reported_sessions": sum(w.pain_status == "reported" for w in workouts),
         "pain_free_sessions": sum(w.pain_status == "reported_none" for w in workouts),
         "pain_unknown_sessions": sum(w.pain_status == "unknown" for w in workouts),
@@ -112,6 +117,9 @@ async def analytics_windows(
             "duration_minutes": previous_metrics["duration_minutes"],
             "total_climbs": previous_metrics["total_climbs"],
             "session_load": previous_metrics["session_load"],
+            "duration_unknown_sessions": previous_metrics["duration_unknown_sessions"],
+            "completed_climbs": previous_metrics["completed_climbs"],
+            "unknown_count_entries": previous_metrics["unknown_count_entries"],
         }
         result[str(window)] = current_metrics
     all_workouts = (

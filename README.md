@@ -1,6 +1,6 @@
 # Sam
 
-Sam is a private Telegram climbing companion for 2–4 fixed users. This repository implements a
+Sam is a private Telegram climbing companion for Alexey and Andrey. This repository implements a
 usable first version: text, voice and video intake, durable raw history, structured workouts and
 recovery, natural-language corrections, semantic memory, an initial plan, personalized coaching,
 and a local product backlog.
@@ -9,7 +9,7 @@ The product source of truth is [SPEC.md](SPEC.md).
 
 ## What is included
 
-- one allowlisted Telegram group;
+- one allowlisted Telegram group and private messages from its two configured athletes;
 - Telegram user ID → athlete mapping for Alexey and Andrey;
 - text, voice-note, Telegram video-note and regular video processing;
 - preliminary climbing-technique observations from evenly sampled video frames;
@@ -18,8 +18,7 @@ The product source of truth is [SPEC.md](SPEC.md).
 - normalized climbing entries, evidence-gated writes and duplicate-session protection;
 - deterministic 7/28/90-day analytics with daily historical snapshots;
 - raw messages, episodic/coach memories and pgvector retrieval;
-- Alexey's seeded profile, target trip and initial plan hypothesis;
-- an empty non-invented Andrey profile;
+- source-linked current profiles, a shared tentative trip, and individually versioned plans;
 - explicit natural-language backlog creation;
 - idempotent handling of repeated Telegram updates;
 - a processing audit trail without hidden chain-of-thought.
@@ -96,7 +95,7 @@ Start a PostgreSQL 17 instance with pgvector, then:
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -e ".[dev]"
+python -m pip install -c requirements.lock -e ".[dev]"
 $env:DATABASE_URL = "postgresql+asyncpg://sam:sam@localhost:5432/sam"
 alembic upgrade head
 uvicorn app.main:app --reload
@@ -163,11 +162,13 @@ allowlisted Telegram update
 OpenAI response state is not Sam's database. Every durable fact and every assistant response is
 stored locally in PostgreSQL. A failed embedding does not block saving a workout or replying.
 New durable facts must contain an exact evidence quote from the current user message; recent context
-cannot silently create another workout. Assistant replies are embedded too, and generated weekly
-plans are persisted as versioned plans.
+cannot silently create another workout. Assistant replies are NOT re-extracted as training evidence. A generated weekly plan is returned
+in the same structured response that is saved and rendered to Telegram.
 
 Workout counts, volume, grades, pain status and 7/28/90-day comparisons are calculated from canonical
-database rows. The language model receives those results but does not calculate or guess them.
+database rows. The language model receives those results but does not calculate or guess them. Unknown counts,
+durations and pain remain unknown. Completed grades are separate from attempted grades; French
+sport grades and Fontainebleau bouldering grades are not treated as interchangeable.
 
 ## Acceptance checks in Telegram
 
@@ -221,12 +222,12 @@ Send a regular Telegram video with the caption:
 Сэм, посмотри технику. Где я здесь трачу лишние силы?
 ```
 
-For a circular video note, send it first and then reply to it with the same request. Sam downloads
-the referenced video, transcribes any speech, extracts a configurable number of evenly spaced
-frames and gives cautious visual observations. He should explicitly distinguish visible evidence
+Circular video notes are transcribed as spoken messages. For visual analysis, explicitly ask Sam
+to review the clip (a reply to it works too). Requested regular videos and video documents are
+sampled into frames; circular notes also supply their speech transcript. He should explicitly distinguish visible evidence
 from hypotheses and must not claim precise joint loads, grip force or continuous motion analysis.
 
-In the shared group, a bare video is logged but ignored until somebody explicitly asks Sam to
+In the shared group, a bare regular video is logged but ignored until somebody explicitly asks Sam to
 analyze it. The hosted Telegram Bot API only lets bots download files up to 20 MB; for a larger
 requested video Sam records the size and explains that a shorter or compressed copy is needed.
 Casual replies to Sam do not force a response unless they contain a question or request.
@@ -239,7 +240,8 @@ After recording a workout, send:
 Сэм, поправка: это Андрей лазил, не я.
 ```
 
-The workout should be reassigned and a row should remain in `corrections` as provenance.
+If the target workout is unambiguous it is reassigned, with an audit record in `corrections`.
+Otherwise Sam asks which session. Reply to the original report or specify its date/ID.
 
 ### Persistent history
 
@@ -295,7 +297,7 @@ ruff check app tests
 ```
 
 The test suite uses a temporary SQLite database for fast service-layer tests. PostgreSQL-specific
-pgvector behavior is exercised when the Docker stack is running.
+migration/restore behavior must also be tested against a separate PostgreSQL copy before release.
 
 ## Reset local data
 
@@ -331,17 +333,43 @@ For recovery, stop the database machine, create a new volume from the selected s
 `/var/lib/postgresql/data`, and verify row counts before starting Sam. Do not destroy the original
 volume until the restored database has passed the acceptance checks above.
 
-After a schema release, the idempotent repair command can be run inside the application machine:
+## Reliability and privacy contract
+
+- Received messages and full Telegram payloads are saved before media/model processing. Edits retain
+  prior text and replace the source's workout contribution; ambiguous legacy merges ask for clarification.
+- Explicit session identity and source contributions distinguish follow-up details from a new session.
+- Facts and memories from a private chat stay private. Shared context can use numeric training
+  records, but does not retrieve private conversation, notes or personal explanations.
+- Processing and outgoing replies have separate durable retry queues (five attempts with backoff).
+  The saved reply is delivered without extracting the workout again. Questions become pending only
+  after delivery, expire after two days, and are scoped to athlete and chat.
+- Keep **one polling machine**. Telegram sends do not have idempotency keys: a response lost after
+  Telegram accepted a send can still cause a duplicate message. Delivery is retryable, not exactly-once.
+- `/health` checks database reachability and polling/worker tasks and exposes queue counts, not message
+  contents or credentials. Failed queue items still need an operator; there is no external pager yet.
+- `/history` produces a deterministic, paginated journal; `/history 10` gets the next ten.
+  Ask naturally for a weekly review or next-session advice. Weekly check-ins are not pushed on a schedule.
+
+Review targeted historical repairs without changing data:
 
 ```powershell
-fly ssh console --app sam-climbing -C "python -m app.maintenance"
+fly ssh console --app sam-climbing --pty=false -C "python -m app.repair_history"
 ```
 
-If message rows were saved but their processing runs remained in `started`, replay them with:
+After inspecting the dry run and taking a backup, add `--apply`. The repair is audited and idempotent.
+Do not run the legacy `app.maintenance` canonicalizer on new contribution-based records.
+
+The worker automatically resumes received/started/retry messages after restart. To inspect terminal
+failures use `python -m app.recover_pending`; add `--apply` to explicitly requeue them after fixing the
+cause. Unsupported oversized media is not retried. Requeuing old replies can create delayed chat noise.
+
+Opt-in real-model checks (uses the configured API key, costs API usage, sends nothing to Telegram):
 
 ```powershell
-fly ssh console --app sam-climbing --pty=false -C "python -u -m app.recover_pending"
+$env:PYTHONIOENCODING = "utf-8"
+python -m app.evaluate
 ```
 
-The recovery command normalizes casual messages without generating delayed chat noise, rebuilds
-structured climbing history for relevant messages, and sends at most the latest pending direct reply.
+Local backups belong in ignored `.backups/`, never Git or the Docker build context. The September 12
+release was tested using a custom-format database dump restored into a separate PostgreSQL database.
+Snapshots and occasional local dumps are not automated off-site backups or high availability.

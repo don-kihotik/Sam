@@ -8,7 +8,9 @@ class ClimbingEntry(BaseModel):
     discipline: str | None = None
     grade_system: str | None = None
     original_grade: str | None = None
-    count: int = Field(default=1, ge=1, le=100)
+    count: int | None = Field(default=None, ge=1, le=1000)
+    route_length_m: float | None = Field(default=None, gt=0, le=1000)
+    evidence: list[str] = Field(default_factory=list)
     completed: bool | None = None
     attempts: int | None = Field(default=None, ge=1, le=100)
     wall_style: str | None = None
@@ -23,6 +25,8 @@ class NamedScore(BaseModel):
 
 class WorkoutCandidate(BaseModel):
     present: bool = False
+    session_action: Literal["auto", "new", "append", "correct"] = "auto"
+    target_workout_id: int | None = None
     date: DateType | None = None
     date_inferred: bool = False
     date_precision: Literal["exact", "day", "month", "unknown"] = "exact"
@@ -55,7 +59,9 @@ class DailyStateCandidate(BaseModel):
 
 
 class CorrectionCandidate(BaseModel):
-    target_kind: Literal["workout", "daily_state", "fact", "athlete"]
+    target_kind: Literal["workout", "daily_state", "fact", "athlete", "memory", "plan", "event"]
+    target_id: int | None = None
+    evidence: list[str] = Field(default_factory=list)
     target_date: DateType | None = None
     field: str | None = None
     old_value: str | float | int | bool | None = None
@@ -80,6 +86,7 @@ class MemoryCandidate(BaseModel):
     importance: float = Field(default=0.5, ge=0, le=1)
     confidence: float = Field(default=0.7, ge=0, le=1)
     evidence: list[str] = Field(default_factory=list)
+    supersedes_id: int | None = None
 
 
 class EventCandidate(BaseModel):
@@ -90,6 +97,7 @@ class EventCandidate(BaseModel):
     date_label: str | None = None
     route_type: str | None = None
     guided: bool | None = None
+    shared: bool = False
     evidence: list[str] = Field(default_factory=list)
 
 
@@ -115,11 +123,31 @@ class CoachArtifacts(BaseModel):
     plan: PlanCandidate = Field(default_factory=PlanCandidate)
 
 
+class ProfileFactCandidate(BaseModel):
+    field: str
+    value: str
+    evidence: list[str] = Field(default_factory=list)
+
+
+class CoachReply(BaseModel):
+    text: str
+    plan: PlanCandidate = Field(default_factory=PlanCandidate)
+    follow_up_question: str | None = None
+    follow_up_workout_id: int | None = None
+
+
 class MessageExtraction(BaseModel):
     normalized_text: str
     should_respond: bool = False
+    conversation_intent: Literal[
+        "silent", "addressed", "continuation", "training_report", "important_risk", "clarification"
+    ] = "silent"
+    answers_follow_up: bool = False
+    is_banter: bool = False
     response_reason: str | None = None
     workout: WorkoutCandidate = Field(default_factory=WorkoutCandidate)
+    additional_workouts: list[WorkoutCandidate] = Field(default_factory=list)
+    profile_facts: list[ProfileFactCandidate] = Field(default_factory=list)
     daily_state: DailyStateCandidate = Field(default_factory=DailyStateCandidate)
     weight_kg: float | None = Field(default=None, ge=20, le=350)
     weight_evidence: list[str] = Field(default_factory=list)
