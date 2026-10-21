@@ -20,6 +20,7 @@ from app.db.models import (
 )
 from app.grades import grade_rank
 from app.membership import ensure_shared_chat, grant_group_access
+from app.training_profile import repair_unqualified_experience_grades
 
 ALEXEY_PROFILE = {
     "identity": {"name": "Alexey"},
@@ -97,12 +98,13 @@ async def seed_initial_data(session: AsyncSession, settings: Settings) -> None:
     alexey = athletes["Alexey"]
     # Backward-compatible bridge from the former single shared_chat_id field
     # into the multi-group membership tables. A NULL value remains an opt-out.
-    legacy_preferences = (
-        await session.scalars(
-            select(TrainingPreference).where(TrainingPreference.shared_chat_id.is_not(None))
-        )
-    ).all()
-    for preference in legacy_preferences:
+    preferences = (await session.scalars(select(TrainingPreference))).all()
+    for preference in preferences:
+        repaired_profile = repair_unqualified_experience_grades(preference.profile or {})
+        if repaired_profile != (preference.profile or {}):
+            preference.profile = repaired_profile
+        if preference.shared_chat_id is None:
+            continue
         member = await session.get(Athlete, preference.athlete_id)
         if member is None or not member.active:
             continue

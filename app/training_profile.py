@@ -15,6 +15,46 @@ from app.membership import ensure_preference
 from app.records import evidence_in, stated_number
 from app.session_intent import _explicit_dates
 
+_FLASH_MARKER = re.compile(r"фл[эе]ш|flash", re.IGNORECASE)
+_ONSIGHT_MARKER = re.compile(r"онсайт|он[- ]?сайт|onsight|on[- ]?sight", re.IGNORECASE)
+
+
+def _normalize_experience_grades(value: dict, evidence: list[str]) -> dict:
+    """Do not turn a general climbing level into a flash/onsight claim."""
+    result = dict(value)
+    source = " ".join(evidence)
+    for field, marker in (
+        ("flash_grade", _FLASH_MARKER),
+        ("onsight_grade", _ONSIGHT_MARKER),
+    ):
+        grade = result.get(field)
+        if grade and marker.search(source) is None:
+            result.setdefault("level", grade)
+            result.pop(field, None)
+    return result
+
+
+def repair_unqualified_experience_grades(profile: dict) -> dict:
+    """Repair older profile rows when their own evidence lacks grade semantics."""
+    updated = copy.deepcopy(profile or {})
+    experiences = updated.get("experience")
+    if not isinstance(experiences, list):
+        return updated
+    repaired = []
+    for item in experiences:
+        if not isinstance(item, dict):
+            repaired.append(item)
+            continue
+        evidence = item.get("evidence")
+        if not isinstance(evidence, list) or not evidence:
+            repaired.append(item)
+            continue
+        repaired.append(
+            _normalize_experience_grades(item, [str(quote) for quote in evidence])
+        )
+    updated["experience"] = repaired
+    return updated
+
 
 async def apply_training_profile(
     session: AsyncSession, *, athlete: Athlete, message: Message, candidate, text: str
@@ -42,6 +82,8 @@ async def apply_training_profile(
             if not quotes:
                 continue
             value = item.model_dump(mode="json", exclude_none=True)
+            if field == "experience":
+                value = _normalize_experience_grades(value, quotes)
             # Numerical availability cannot be inferred from 'evening'.
             if "minutes" in value and not stated_number(" ".join(quotes), value["minutes"]):
                 value.pop("minutes")

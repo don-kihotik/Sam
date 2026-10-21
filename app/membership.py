@@ -21,6 +21,7 @@ from app.db.models import (
     SharedChatMembership,
     TrainingPreference,
 )
+from app.onboarding import start_profile_onboarding
 
 
 @dataclass(slots=True)
@@ -283,6 +284,8 @@ async def redeem_invitation_details(
         raise ValueError("This Telegram account is inactive.")
     preference = await ensure_preference(session, athlete)
     preference.private_chat_id = chat_id
+    if created:
+        start_profile_onboarding(preference, now=now)
     if invitation.shared_chat_id is not None:
         await grant_group_access(
             session,

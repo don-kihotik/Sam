@@ -217,6 +217,11 @@ needed. The button expires after seven days and cannot be redeemed by another Te
 Registered athletes may belong to multiple shared groups. `/sharing off` in a private chat revokes
 all group memberships without deleting private history.
 
+For a new athlete, Sam keeps onboarding separate from planning: it collects goal, experience,
+availability and training location, then offers a `Составить первую тренировку` button. A plan is
+created only after the athlete explicitly chooses that step and supplies the training day, available
+minutes and current readiness/pain status.
+
 ### Structured training memory
 
 From Alexey:

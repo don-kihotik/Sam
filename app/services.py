@@ -51,6 +51,15 @@ from app.memory import (
     render_history_audit,
     semantic_history,
 )
+from app.onboarding import (
+    complete_first_session,
+    first_session_clarification,
+    first_session_context,
+    first_session_minutes,
+    first_session_missing,
+    first_session_pending,
+    profile_onboarding_reply,
+)
 from app.planning import save_plan
 from app.prompts import PROMPT_VERSION
 from app.readiness import recent_illness_unresolved
@@ -412,6 +421,19 @@ class MessageProcessor:
                 text=incoming.text, today=today, now=incoming.timestamp,
                 current_message_id=message.id,
             )
+            first_pending = first_session_pending(preference)
+            first_missing = (
+                first_session_missing(incoming.text, session_date=intent.date)
+                if first_pending
+                else ()
+            )
+            first_minutes = first_session_minutes(incoming.text) if first_pending else None
+            first_context = ""
+            if first_pending and not first_missing and intent.date and first_minutes:
+                first_context = first_session_context(
+                    session_date=intent.date, minutes=first_minutes
+                )
+                session_context += first_context
             intent_target = await session.get(Plan, intent.target_plan_id) if intent.target_plan_id else None
             illness_unresolved = await recent_illness_unresolved(
                 session, athlete_id=athlete.id, chat_id=incoming.telegram_chat_id, now=incoming.timestamp,
@@ -423,7 +445,8 @@ class MessageProcessor:
                 "ambiguity": intent.ambiguity,
                 "current_session": intent_target.content if intent_target else None,
                 "recent_reported_illness_without_explicit_recovery": illness_unresolved,
-                "requested_max_minutes": requested_session_minutes(incoming.text),
+                "requested_max_minutes": first_minutes
+                or requested_session_minutes(incoming.text),
             }, ensure_ascii=False)
             session_context += intent_context
             if command and command.model_request:
@@ -496,11 +519,19 @@ class MessageProcessor:
                 message.embedding = await self.ai.embed(incoming.text)
             except Exception:  # noqa: BLE001 - embeddings are optional
                 mutations.append({"kind": "embedding", "status": "unavailable"})
+            onboarding_step = None
+            if incoming.telegram_chat_id > 0:
+                onboarding_step = profile_onboarding_reply(
+                    preference, now=incoming.timestamp
+                )
+                if onboarding_step is None and first_pending and first_missing:
+                    onboarding_step = first_session_clarification(first_missing)
             # Banter is stored as conversation, never used as a coaching interrupt.
             should_reply = (
                 addressed
                 or extraction.conversation_intent == "continuation"
                 or (extraction.should_respond and not extraction.is_banter)
+                or onboarding_step is not None
             )
             if extraction.is_banter and not addressed:
                 should_reply = False
@@ -510,7 +541,11 @@ class MessageProcessor:
             reply = None
             reply_payload = {}
             if should_reply or needs_clarification:
-                if intent.ambiguity and not extraction.workout.present:
+                if onboarding_step is not None:
+                    reply = onboarding_step.text
+                    reply_payload = onboarding_step.payload
+                    coach_reply = CoachReply(text=reply)
+                elif intent.ambiguity and not extraction.workout.present:
                     reply = intent_question(intent.ambiguity)
                     coach_reply = CoachReply(text=reply)
                 elif needs_clarification:
@@ -552,6 +587,7 @@ class MessageProcessor:
                         session_date=intent.date or today,
                     )
                     context += intent_context
+                    context += first_context
                     if planning_task:
                         context += "\n" + planning_task.model_context()
                     if command and command.model_request:
@@ -591,7 +627,8 @@ class MessageProcessor:
                                 session, athlete_id=athlete.id, candidate=candidate,
                                 source_message_id=message.id,
                                 evidence=[candidate.summary or "Generated plan"], today=today,
-                                max_duration_minutes=requested_session_minutes(incoming.text),
+                                max_duration_minutes=first_minutes
+                                or requested_session_minutes(incoming.text),
                             )
                             if planning_task and record.scope == planning_task.requested_scope:
                                 record.source_message_ids = list(dict.fromkeys(
@@ -613,6 +650,12 @@ class MessageProcessor:
                                 preference, planning_task, plan_id=checked.record.id,
                             )
                         mutations.append({"kind": "plan", "id": checked.record.id, "status": "saved"})
+                        if first_pending and checked.record.scope == "session":
+                            complete_first_session(
+                                preference,
+                                plan_id=checked.record.id,
+                                now=incoming.timestamp,
+                            )
                         if checked.record.scope == "session" and incoming.telegram_chat_id > 0:
                             reply_payload = session_buttons(checked.record.id)
                 pending_questions = list(await session.scalars(select(FollowUp.question).where(

@@ -25,6 +25,7 @@ from app.membership import (
     grant_group_access,
     revoke_group_access,
 )
+from app.onboarding import start_first_session
 from app.planning import (
     begin_log,
     confirm_planned_session,
@@ -46,6 +47,7 @@ _TRAINING_COMMANDS = {
     "start",
     "whoami",
     "setup",
+    "first",
     "invite",
     "today",
     "week",
@@ -173,6 +175,14 @@ async def handle_training_command(
         return CommandResult(
             "Напиши одной фразой: цель, доступные дни/время и снаряжение. "
             "Например: «Боулдеринг, хочу V5; могу вт/чт/сб вечером; есть турник и резинки»."
+        )
+
+    if name == "first":
+        start_first_session(preference, now=datetime.now(UTC))
+        return CommandResult(
+            "Отлично, составим первую тренировку. Напиши одним сообщением: когда она будет, "
+            "сколько минут у тебя есть, как ты сейчас себя чувствуешь и есть ли боль. "
+            "Например: «в субботу, 90 минут, чувствую себя хорошо, боли нет»."
         )
 
     if name == "invite":

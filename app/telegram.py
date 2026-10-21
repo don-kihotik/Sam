@@ -65,7 +65,8 @@ _VIDEO_ANALYSIS_REQUEST = re.compile(
     re.IGNORECASE,
 )
 _CALLBACK_DATA = re.compile(
-    r"^train:(session|log|export|confirm|adjust|shorten|replace|reschedule|skip):(\d+)$"
+    r"^(?:train:(session|log|export|confirm|adjust|shorten|replace|reschedule|skip):(\d+)|"
+    r"onboard:first)$"
 )
 TELEGRAM_DOWNLOAD_LIMIT_BYTES = 20 * 1024 * 1024
 
@@ -486,7 +487,10 @@ class TelegramRuntime:
         if callback.message.chat.type != ChatType.PRIVATE:
             await callback.answer("Открой эту команду в личном чате.", show_alert=True)
             return
-        action, raw_id = match.groups()
+        if callback.data == "onboard:first":
+            action, raw_id = "first", None
+        else:
+            action, raw_id = match.groups()
         async with self._lock, self.database.sessions() as session:
             athlete = await session.scalar(
                 select(Athlete).where(
@@ -510,7 +514,7 @@ class TelegramRuntime:
                 telegram_chat_id=callback.message.chat.id,
                 telegram_user_id=callback.from_user.id,
                 timestamp=datetime.now(UTC),
-                text=f"/{action} {raw_id}",
+                text="/first" if action == "first" else f"/{action} {raw_id}",
                 message_type="callback",
                 reply_to_message_id=callback.message.message_id,
                 attachment_metadata={
@@ -527,7 +531,7 @@ class TelegramRuntime:
                     row.processing_data = {
                         **(row.processing_data or {}),
                         "training_action": "confirm_plan" if action == "confirm" else action,
-                        "plan_id": int(raw_id),
+                        **({"plan_id": int(raw_id)} if raw_id is not None else {}),
                     }
                     await session.commit()
         await callback.answer("Запрос принят.")

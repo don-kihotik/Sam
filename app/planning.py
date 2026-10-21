@@ -145,6 +145,9 @@ _DISPLAY_ALIASES = (
     (re.compile(r"\bSide lunges\b", re.IGNORECASE), "Боковые выпады"),
     (re.compile(r"\bStanding IYT\b", re.IGNORECASE), "IYT стоя"),
     (re.compile(r"\bPlank twists\b", re.IGNORECASE), "Скручивания в планке"),
+    (re.compile(r"\bComplete exercises in order\b", re.IGNORECASE), "Выполни упражнения по порядку"),
+    (re.compile(r"\bHanging knee raises\b", re.IGNORECASE), "Подъёмы коленей в висе"),
+    (re.compile(r"\bBent-leg window wipers\b", re.IGNORECASE), "Дворники с согнутыми ногами"),
     (re.compile(r"\bEasy route climbing\b", re.IGNORECASE), "Лёгкое лазание по трассам"),
     (re.compile(r"\bChoose a cardio exercise\.?") , "Выбери кардио-упражнение."),
     (re.compile(r"\bArm swings, single-leg RDL, side lunges, IYT and plank twists\.?") , "Махи руками, румынская тяга на одной ноге, боковые выпады, IYT и скручивания в планке."),
@@ -320,8 +323,8 @@ def _step_lines(
                 continue
             candidate = _display_text(step[key])
             # Original instructions remain executable source facts even when
-            # not yet curated into Russian; only opaque English labels are
-            # replaced by a Russian structural action below.
+            # not yet curated into Russian; opaque English labels use a
+            # structural fallback until a presentation alias is added.
             if key == "instruction" or not source_localized_only or _is_russian_text(candidate):
                 details.append(candidate)
                 visible_text = True
