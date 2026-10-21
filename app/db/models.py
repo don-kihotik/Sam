@@ -77,6 +77,7 @@ class Workout(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), index=True)
+    plan_id: Mapped[int | None] = mapped_column(ForeignKey("plans.id"), nullable=True, index=True)
     date: Mapped[date | None] = mapped_column(Date, index=True, nullable=True)
     date_precision: Mapped[str] = mapped_column(String(20), default="exact")
     type: Mapped[str] = mapped_column(String(40))
@@ -189,6 +190,9 @@ class Plan(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), index=True)
+    scope: Mapped[str] = mapped_column(String(16), default="week", index=True)
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("plans.id"), nullable=True)
+    supersedes_id: Mapped[int | None] = mapped_column(ForeignKey("plans.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="active")
     visibility: Mapped[str] = mapped_column(String(16), default="private")
     start_date: Mapped[date] = mapped_column(Date)
@@ -295,11 +299,15 @@ class Outbox(Base):
     __table_args__ = (UniqueConstraint("source_message_id", "revision"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    source_message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"), index=True)
+    source_message_id: Mapped[int | None] = mapped_column(
+        ForeignKey("messages.id"), index=True, nullable=True
+    )
+    dedupe_key: Mapped[str | None] = mapped_column(String(160), unique=True, nullable=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     revision: Mapped[int] = mapped_column(Integer, default=1)
     athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"))
     telegram_chat_id: Mapped[int] = mapped_column(BigInteger)
-    reply_to_message_id: Mapped[int] = mapped_column(BigInteger)
+    reply_to_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     text: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
     sent_message_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
@@ -321,3 +329,57 @@ class FollowUp(Base):
     status: Mapped[str] = mapped_column(String(20), default="pending")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TrainingPreference(Base):
+    __tablename__ = "training_preferences"
+
+    athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), primary_key=True)
+    profile: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    private_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    shared_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    morning_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    catalog_mode: Mapped[bool] = mapped_column(Boolean, default=False)
+    log_plan_id: Mapped[int | None] = mapped_column(ForeignKey("plans.id"), nullable=True)
+    log_workout_id: Mapped[int | None] = mapped_column(ForeignKey("workouts.id"), nullable=True)
+    log_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Invitation(Base):
+    __tablename__ = "invitations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_by: Mapped[int] = mapped_column(ForeignKey("athletes.id"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    redeemed_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+
+class CatalogProtocol(Base):
+    __tablename__ = "catalog_protocols"
+    __table_args__ = (UniqueConstraint("slug", "version"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    slug: Mapped[str] = mapped_column(String(120), index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    title: Mapped[str] = mapped_column(String(240))
+    category: Mapped[str] = mapped_column(String(40), index=True)
+    status: Mapped[str] = mapped_column(String(24), default="draft", index=True)
+    specification: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CatalogSource(Base):
+    __tablename__ = "catalog_sources"
+    __table_args__ = (UniqueConstraint("athlete_id", "file_unique_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), index=True)
+    source_message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"), unique=True)
+    file_unique_id: Mapped[str] = mapped_column(String(200))
+    album_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    protocol_id: Mapped[int | None] = mapped_column(
+        ForeignKey("catalog_protocols.id"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(24), default="received")
+    extracted: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

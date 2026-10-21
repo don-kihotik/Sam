@@ -76,7 +76,7 @@ async def test_workout_memory_and_reply_are_personalized(database, settings):
     assert workout.structured_details["pump"] == 6
     assert workout.structured_details["climbing"][0]["original_grade"] == "5.9"
     assert "Alexey" in ai.coach_contexts[0]
-    assert "SHARED TRAINING OVERVIEW" in ai.coach_contexts[0]
+    assert "SHARED TRAINING OVERVIEW" not in ai.coach_contexts[0]
     assert workout.athlete_id == result.athlete_id
 
 
@@ -164,7 +164,7 @@ async def test_explicit_backlog_creation(database, settings):
     assert item.original_message_id == result.message_id
 
 
-async def test_correction_can_reassign_workout(database, settings):
+async def test_correction_cannot_reassign_workout_to_another_athlete(database, settings):
     initial = MessageExtraction(
         normalized_text="Сегодня была тренировка.",
         workout=WorkoutCandidate(
@@ -197,8 +197,8 @@ async def test_correction_can_reassign_workout(database, settings):
         andrey = await session.scalar(select(Athlete).where(Athlete.name == "Andrey"))
         audit = await session.scalar(select(Correction))
     assert workout is not None and andrey is not None
-    assert workout.athlete_id == andrey.id
-    assert audit is not None and audit.status == "applied"
+    assert workout.athlete_id != andrey.id
+    assert audit is not None and audit.status == "rejected_cross_athlete"
 
 
 async def test_non_addressed_message_can_be_silently_learned(database, settings):

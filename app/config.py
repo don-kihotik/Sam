@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     debug: bool = False
     recent_message_limit: int = Field(default=24, ge=5, le=100)
     video_max_frames: int = Field(default=12, ge=4, le=24)
+    policy_max_text_chars: int = Field(default=6000, ge=500, le=12000)
+    policy_hourly_requests: int = Field(default=30, ge=1, le=300)
+    policy_daily_requests: int = Field(default=120, ge=1, le=1000)
+    policy_global_daily_requests: int = Field(default=300, ge=1, le=3000)
+    policy_audio_max_seconds: int = Field(default=180, ge=10, le=600)
+    policy_video_max_seconds: int = Field(default=300, ge=10, le=600)
 
     @field_validator(
         "telegram_allowed_chat_id",

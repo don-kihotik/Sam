@@ -1,6 +1,6 @@
 # Sam
 
-Sam is a private Telegram climbing companion for Alexey and Andrey. This repository implements a
+Sam is a private Telegram climbing companion for Alexey, Andrey and explicitly invited friends. This repository implements a
 usable first version: text, voice and video intake, durable raw history, structured workouts and
 recovery, natural-language corrections, semantic memory, an initial plan, personalized coaching,
 and a local product backlog.
@@ -9,7 +9,7 @@ The product source of truth is [SPEC.md](SPEC.md).
 
 ## What is included
 
-- one allowlisted Telegram group and private messages from its two configured athletes;
+- one configured Telegram group with per-athlete sharing consent, and authenticated private chats;
 - Telegram user ID → athlete mapping for Alexey and Andrey;
 - text, voice-note, Telegram video-note and regular video processing;
 - preliminary climbing-technique observations from evenly sampled video frames;
@@ -19,6 +19,10 @@ The product source of truth is [SPEC.md](SPEC.md).
 - deterministic 7/28/90-day analytics with daily historical snapshots;
 - raw messages, episodic/coach memories and pgvector retrieval;
 - source-linked current profiles, a shared tentative trip, and individually versioned plans;
+- a versioned exercise/protocol catalog with equipment, venue and prerequisite filtering;
+- separate program, week and day-session plans, Markdown exports and opt-in morning delivery;
+- exact reported strength sets and running metrics, with explicit numeric plan confirmation;
+- single-use private invitations and isolated profiles for additional athletes;
 - explicit natural-language backlog creation;
 - idempotent handling of repeated Telegram updates;
 - a processing audit trail without hidden chain-of-thought.
@@ -227,8 +231,8 @@ to review the clip (a reply to it works too). Requested regular videos and video
 sampled into frames; circular notes also supply their speech transcript. He should explicitly distinguish visible evidence
 from hypotheses and must not claim precise joint loads, grip force or continuous motion analysis.
 
-In the shared group, a bare regular video is logged but ignored until somebody explicitly asks Sam to
-analyze it. The hosted Telegram Bot API only lets bots download files up to 20 MB; for a larger
+In the shared group, a bare regular video is logged but ignored until its sender explicitly asks Sam to
+analyze their own climbing. Replies to another person's media are not analyzed. The hosted Telegram Bot API only lets bots download files up to 20 MB; for a larger
 requested video Sam records the size and explains that a shorter or compressed copy is needed.
 Casual replies to Sam do not force a response unless they contain a question or request.
 
@@ -237,11 +241,12 @@ Casual replies to Sam do not force a response unless they contain a question or 
 After recording a workout, send:
 
 ```text
-Сэм, поправка: это Андрей лазил, не я.
+Сэм, поправка: моя тренировка вчера длилась 45 минут, не 60.
 ```
 
-If the target workout is unambiguous it is reassigned, with an audit record in `corrections`.
+If the target workout is unambiguous its source contribution is corrected, with an audit record.
 Otherwise Sam asks which session. Reply to the original report or specify its date/ID.
+Only the sender's own records can be corrected; workouts cannot be reassigned to a friend.
 
 ### Persistent history
 
@@ -299,6 +304,18 @@ ruff check app tests
 The test suite uses a temporary SQLite database for fast service-layer tests. PostgreSQL-specific
 migration/restore behavior must also be tested against a separate PostgreSQL copy before release.
 
+The September training implementation and Telegram commands are documented in
+[the training guide](docs/TRAINING.md). New screenshot intake is a private review queue, not
+automatic catalog publication. Catalog membership alone does not mean an exercise is ready or
+appropriate for a particular athlete. Changes in this workspace are not evidence of deployment.
+
+Opt-in synthetic training extraction and plan-generation checks (real API usage; no Telegram
+sends or database writes):
+
+```powershell
+python -m app.evaluate_training
+```
+
 ## Reset local data
 
 This deletes the local Docker database volume and cannot be undone:
@@ -338,8 +355,12 @@ volume until the restored database has passed the acceptance checks above.
 - Received messages and full Telegram payloads are saved before media/model processing. Edits retain
   prior text and replace the source's workout contribution; ambiguous legacy merges ask for clarification.
 - Explicit session identity and source contributions distinguish follow-up details from a new session.
-- Facts and memories from a private chat stay private. Shared context can use numeric training
-  records, but does not retrieve private conversation, notes or personal explanations.
+- Every answer and retrieved history is scoped to the requesting athlete, including in a group.
+  Sam refuses requests about another athlete, comparisons, and off-topic assistant tasks.
+  A person's own numeric training records can be used when they ask in a group (visible there),
+  but private conversation, notes and personal explanations are not retrieved into group context.
+  Topic preflight, persistent request quotas and media limits run before expensive processing;
+  see `docs/TRAINING.md` for defaults and cost caveats.
 - Processing and outgoing replies have separate durable retry queues (five attempts with backoff).
   The saved reply is delivered without extracting the workout again. Questions become pending only
   after delivery, expire after two days, and are scoped to athlete and chat.

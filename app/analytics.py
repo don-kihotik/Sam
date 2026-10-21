@@ -13,6 +13,85 @@ from app.grades import grade_rank
 __all__ = ["analytics_windows", "grade_rank", "refresh_analytics_snapshots"]
 
 
+def _actual_activity_metrics(workouts: list[Workout]) -> dict[str, Any]:
+    """Metrics from reported activities only, split before conditions can mix."""
+
+    strength: dict[str, dict[str, Any]] = {}
+    runs: dict[str, dict[str, Any]] = {}
+    run_workouts: dict[str, set[int]] = {}
+    run_duration_workouts: dict[str, set[int]] = {}
+    run_distance_workouts: dict[str, set[int]] = {}
+    for workout in workouts:
+        for activity in (workout.structured_details or {}).get("activities", []):
+            if not isinstance(activity, dict):
+                continue
+            kind = activity.get("kind")
+            condition = activity.get("condition") or "unspecified"
+            if kind == "strength":
+                exercise = activity.get("exercise") or activity.get("title") or "unspecified"
+                # Grip/condition is part of the comparison key, never averaged together.
+                key = f"{exercise} | {condition}"
+                group = strength.setdefault(
+                    key,
+                    {
+                        "exercise": exercise,
+                        "condition": condition,
+                        "reported_sets": 0,
+                        "sets_with_reps": 0,
+                        "sets_with_weight": 0,
+                        "comparable_volume_sets": 0,
+                        "volume_kg_reps": None,
+                    },
+                )
+                volume = 0.0
+                for actual_set in activity.get("sets", []):
+                    if not isinstance(actual_set, dict):
+                        continue
+                    group["reported_sets"] += 1
+                    reps, weight = actual_set.get("reps"), actual_set.get("weight_kg")
+                    if reps is not None:
+                        group["sets_with_reps"] += 1
+                    if weight is not None:
+                        group["sets_with_weight"] += 1
+                    if reps is not None and weight is not None:
+                        group["comparable_volume_sets"] += 1
+                        volume += float(reps) * float(weight)
+                if group["comparable_volume_sets"]:
+                    group["volume_kg_reps"] = round(float(group["volume_kg_reps"] or 0) + volume, 2)
+            elif kind == "run":
+                group = runs.setdefault(
+                    condition,
+                    {
+                        "condition": condition,
+                        "sessions": 0,
+                        "reported_activities": 0,
+                        "duration_known_sessions": 0,
+                        "distance_known_sessions": 0,
+                        "duration_minutes": None,
+                        "distance_m": None,
+                    },
+                )
+                group["reported_activities"] += 1
+                run_workouts.setdefault(condition, set()).add(workout.id)
+                duration, distance = activity.get("duration_minutes"), activity.get("distance_m")
+                if duration is not None:
+                    run_duration_workouts.setdefault(condition, set()).add(workout.id)
+                    group["duration_minutes"] = int(group["duration_minutes"] or 0) + int(duration)
+                if distance is not None:
+                    run_distance_workouts.setdefault(condition, set()).add(workout.id)
+                    group["distance_m"] = round(
+                        float(group["distance_m"] or 0) + float(distance), 2
+                    )
+    for condition, group in runs.items():
+        group["sessions"] = len(run_workouts.get(condition, set()))
+        group["duration_known_sessions"] = len(run_duration_workouts.get(condition, set()))
+        group["distance_known_sessions"] = len(run_distance_workouts.get(condition, set()))
+    return {
+        "strength_by_exercise_and_condition": strength,
+        "run_by_condition": runs,
+    }
+
+
 def _metrics(workouts: list[Workout]) -> dict[str, Any]:
     grade_distribution: dict[str, int] = {}
     discipline_counts: dict[str, int] = {}
@@ -83,6 +162,7 @@ def _metrics(workouts: list[Workout]) -> dict[str, Any]:
         "pain_reported_sessions": sum(w.pain_status == "reported" for w in workouts),
         "pain_free_sessions": sum(w.pain_status == "reported_none" for w in workouts),
         "pain_unknown_sessions": sum(w.pain_status == "unknown" for w in workouts),
+        "actual_activities": _actual_activity_metrics(workouts),
     }
 
 

@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.ai import AIService
+from app.catalog import seed_catalog
 from app.config import get_settings
 from app.db.session import Database
 from app.seed import seed_initial_data
@@ -29,6 +30,8 @@ async def lifespan(app: FastAPI):
         await database.create_all_for_tests()
     async with database.sessions() as session:
         await seed_initial_data(session, settings)
+        await seed_catalog(session)
+        await session.commit()
 
     telegram: TelegramRuntime | None = None
     if settings.telegram_ready and settings.openai_ready:

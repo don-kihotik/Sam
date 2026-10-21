@@ -6,20 +6,42 @@ import logging
 import re
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from io import BytesIO
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiogram import Bot, Dispatcher, Router
 from aiogram.enums import ChatType, ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyParameters,
+    Video,
+    VideoNote,
+)
 from aiogram.types import Message as TelegramMessage
-from aiogram.types import ReplyParameters, Video, VideoNote
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 
 from app.ai import AIService
 from app.config import Settings
-from app.db.models import FollowUp, Message, Outbox, ProcessingRun
+from app.db.models import (
+    Athlete,
+    CatalogSource,
+    FollowUp,
+    Message,
+    Outbox,
+    ProcessingRun,
+    TrainingPreference,
+)
 from app.db.session import Database
 from app.delivery import split_reply
+from app.membership import ensure_preference, redeem_invitation
+from app.planning import latest_session_plan, render_training_plan
+from app.prompts import SELF_ONLY_PROMPT_VERSIONS
+from app.scheduling import enqueue_morning_plans
 from app.services import IncomingMessage, MessageProcessor, is_directly_addressed
 from app.video import extract_video_frames
 
@@ -35,6 +57,9 @@ _VIDEO_ANALYSIS_REQUEST = re.compile(
     r"(?:разбер\w*|посмотр\w*|проанализ\w*|техник\w*|ошибк\w*|"
     r"что\s+(?:не\s+так|видно)|где\s+.*(?:сил|ошиб))",
     re.IGNORECASE,
+)
+_CALLBACK_DATA = re.compile(
+    r"^train:(session|log|export|confirm|adjust|shorten|replace|reschedule|skip):(\d+)$"
 )
 TELEGRAM_DOWNLOAD_LIMIT_BYTES = 20 * 1024 * 1024
 
@@ -129,6 +154,7 @@ class TelegramRuntime:
         self.processor = MessageProcessor(settings, ai)
         self._task: asyncio.Task | None = None
         self._worker: asyncio.Task | None = None
+        self._scheduler: asyncio.Task | None = None
         self._bot_id: int | None = None
         self._wake = asyncio.Event()
         self._lock = asyncio.Lock()
@@ -136,12 +162,14 @@ class TelegramRuntime:
         self.last_error = self.last_media_error = None
         self.router.message.register(self._handle_message)
         self.router.edited_message.register(self._handle_message)
+        self.router.callback_query.register(self._handle_callback)
         self.dispatcher.include_router(self.router)
 
     async def start(self) -> None:
         me = await self.bot.get_me()
         self._bot_id = me.id
         self._worker = asyncio.create_task(self._work(), name="sam-worker")
+        self._scheduler = asyncio.create_task(self._run_scheduler(), name="sam-reminders")
         self._task = asyncio.create_task(
             # Do not acknowledge the next update until this handler has durably saved it.
             self.dispatcher.start_polling(self.bot, handle_signals=False, handle_as_tasks=False),
@@ -174,6 +202,10 @@ class TelegramRuntime:
             self._worker.cancel()
             with suppress(asyncio.CancelledError):
                 await self._worker
+        if self._scheduler:
+            self._scheduler.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._scheduler
         if self._task:
             with suppress(asyncio.CancelledError):
                 await self._task
@@ -182,22 +214,52 @@ class TelegramRuntime:
     async def _handle_message(self, message: TelegramMessage) -> None:
         if not message.from_user or message.from_user.is_bot:
             return
-        if not is_allowed_chat(
-            self.settings,
-            chat_id=message.chat.id,
-            chat_type=message.chat.type,
-            user_id=message.from_user.id,
-        ):
-            return
         if message.text and message.text.split("@", 1)[0].strip().lower() == "/whoami":
             await message.reply(f"Твой Telegram user ID: {message.from_user.id}")
-            return
-        if message.from_user.id not in known_user_ids(self.settings):
             return
         self.last_update_at = datetime.now(UTC)
         # Serialize ingestion and processing for this small group, including edits.
         async with self._lock:  # noqa: SIM117 - keep ingestion transaction scope explicit
             async with self.database.sessions() as session:
+                athlete = await session.scalar(
+                    select(Athlete).where(
+                        Athlete.telegram_user_id == message.from_user.id,
+                        Athlete.active.is_(True),
+                    )
+                )
+                # Only a private /start <token> can introduce a previously
+                # unknown account.  Group membership alone is never authority.
+                if athlete is None:
+                    start = (message.text or "").strip().split(maxsplit=1)
+                    if (
+                        message.chat.type != ChatType.PRIVATE
+                        or len(start) != 2
+                        or start[0].split("@", 1)[0].casefold() != "/start"
+                    ):
+                        return
+                    try:
+                        athlete = await redeem_invitation(
+                            session,
+                            token=start[1],
+                            telegram_user_id=message.from_user.id,
+                            display_name=message.from_user.full_name,
+                            chat_id=message.chat.id,
+                            now=datetime.now(UTC),
+                        )
+                    except (PermissionError, ValueError):
+                        return
+                    await session.commit()
+                elif message.chat.type == ChatType.PRIVATE:
+                    preference = await ensure_preference(session, athlete)
+                    if preference.private_chat_id is None:
+                        preference.private_chat_id = message.chat.id
+                        await session.commit()
+                else:
+                    if message.chat.id != self.settings.telegram_allowed_chat_id:
+                        return
+                    preference = await ensure_preference(session, athlete)
+                    if preference.shared_chat_id != message.chat.id:
+                        return
                 row = await session.scalar(
                     select(Message).where(
                         Message.telegram_chat_id == message.chat.id,
@@ -217,7 +279,13 @@ class TelegramRuntime:
                             "transcript": row.transcript,
                         }
                     )
-                    row.processing_data = {"edit_history": history, "is_edit": True}
+                    # Keep durable policy reservations.  An edit is a new
+                    # revision, not a way to erase prior paid-work quota.
+                    row.processing_data = {
+                        **(row.processing_data or {}),
+                        "edit_history": history,
+                        "is_edit": True,
+                    }
                     row.revision += 1
                     row.raw_text = message.text or message.caption or ""
                     row.transcript = None
@@ -269,6 +337,64 @@ class TelegramRuntime:
                     )
         self._wake.set()
 
+    async def _handle_callback(self, callback: CallbackQuery) -> None:
+        """Turn an authenticated button click into a normal durable command."""
+        if not callback.from_user or not callback.message or not callback.data:
+            return
+        match = _CALLBACK_DATA.fullmatch(callback.data)
+        if match is None:
+            await callback.answer("Кнопка больше не поддерживается.", show_alert=True)
+            return
+        if callback.message.chat.type != ChatType.PRIVATE:
+            await callback.answer("Открой эту команду в личном чате.", show_alert=True)
+            return
+        action, raw_id = match.groups()
+        async with self._lock, self.database.sessions() as session:
+            athlete = await session.scalar(
+                select(Athlete).where(
+                    Athlete.telegram_user_id == callback.from_user.id,
+                    Athlete.active.is_(True),
+                )
+            )
+            if athlete is None or callback.message.chat.id != callback.from_user.id:
+                await callback.answer("Нет доступа.", show_alert=True)
+                return
+            preference = await ensure_preference(session, athlete)
+            if preference.private_chat_id not in {None, callback.message.chat.id}:
+                await callback.answer("Нет доступа.", show_alert=True)
+                return
+            # Telegram callback IDs are unique.  A deterministic negative
+            # message id lets the existing Message/ProcessingRun dedupe path
+            # process a duplicate callback exactly once.
+            synthetic_id = -int(sha256(callback.id.encode()).hexdigest()[:15], 16)
+            incoming = IncomingMessage(
+                telegram_message_id=synthetic_id,
+                telegram_chat_id=callback.message.chat.id,
+                telegram_user_id=callback.from_user.id,
+                timestamp=datetime.now(UTC),
+                text=f"/{action} {raw_id}",
+                message_type="callback",
+                reply_to_message_id=callback.message.message_id,
+                attachment_metadata={
+                    "callback_id": callback.id,
+                    "callback_data": callback.data,
+                },
+            )
+            recorded = await self.processor.record_unprocessed(
+                session, incoming, status="received", reason="callback"
+            )
+            if recorded.message_id is not None:
+                row = await session.get(Message, recorded.message_id)
+                if row is not None:
+                    row.processing_data = {
+                        **(row.processing_data or {}),
+                        "training_action": "confirm_plan" if action == "confirm" else action,
+                        "plan_id": int(raw_id),
+                    }
+                    await session.commit()
+        await callback.answer("Запрос принят.")
+        self._wake.set()
+
     async def _work(self) -> None:
         while True:
             try:
@@ -285,6 +411,21 @@ class TelegramRuntime:
                 logger.error("Worker operation failed: %s", type(exc).__name__)
                 await asyncio.sleep(2)
 
+    async def _run_scheduler(self) -> None:
+        """A small independent timer keeps reminders from waiting on model work."""
+        while True:
+            try:
+                async with self._lock, self.database.sessions() as session:
+                    await enqueue_morning_plans(session, now=datetime.now(UTC))
+                    await session.commit()
+                await asyncio.sleep(20)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - scheduler must not kill polling
+                self.last_error = f"scheduler:{type(exc).__name__}"
+                logger.warning("Reminder scheduling deferred: %s", type(exc).__name__)
+                await asyncio.sleep(20)
+
     async def _process_next(self) -> None:
         async with self.database.sessions() as session:
             row = await session.scalar(
@@ -297,7 +438,21 @@ class TelegramRuntime:
                         ProcessingRun.next_attempt_at <= datetime.now(UTC),
                     ),
                 )
-                .order_by(Message.telegram_timestamp, Message.id)
+                # Historical catalog recovery is deliberately background work:
+                # a new user message must never wait behind 159 screenshots.
+                .order_by(
+                    case(
+                        (
+                            Message.processing_data["catalog_recovery"]["version"]
+                            .as_string()
+                            == "historical-catalog-v1",
+                            1,
+                        ),
+                        else_=0,
+                    ),
+                    Message.telegram_timestamp,
+                    Message.id,
+                )
                 .limit(1)
             )
             if not row:
@@ -308,7 +463,62 @@ class TelegramRuntime:
                 payload = row.attachment_data.get("telegram_payload")
                 if payload:
                     telegram = TelegramMessage.model_validate(payload)
-                    incoming = await self._prepare(telegram, row)
+                    # Catalog mode deliberately stages raw photos and never feeds
+                    # image/OCR content into workout extraction or the model.
+                    preference = await session.get(TrainingPreference, row.athlete_id)
+                    staged_catalog_source = await session.scalar(
+                        select(CatalogSource.id).where(CatalogSource.source_message_id == row.id)
+                    )
+                    historical_catalog = (
+                        (row.processing_data or {}).get("catalog_recovery", {}).get("version")
+                        == "historical-catalog-v1"
+                    )
+                    if (
+                        telegram.photo
+                        and telegram.chat.type == ChatType.PRIVATE
+                        and preference
+                        and (
+                            preference.catalog_mode
+                            or staged_catalog_source is not None
+                            or historical_catalog
+                        )
+                    ):
+                        from app.catalog import receive_catalog_source
+
+                        source = await receive_catalog_source(session, message=row)
+                        # Receipt is durable before downloading or OCR. A later
+                        # provider failure leaves a received source for retry.
+                        await session.commit()
+                        if source.status == "received":
+                            athlete = await session.get(Athlete, row.athlete_id)
+                            refusal = await self._preflight_media_request(
+                                session,
+                                athlete=athlete,
+                                row=row,
+                                request_text=(
+                                    telegram.caption or "Материал для каталога упражнений"
+                                ),
+                            )
+                            if refusal:
+                                raise PermanentMediaError(refusal)
+                            photo = telegram.photo[-1]
+                            buffer = BytesIO()
+                            await self.bot.download(photo, destination=buffer)
+                            extracted = await self.processor.ai.read_catalog_photo(
+                                buffer.getvalue()
+                            )
+                            # Preserve operator recovery/provenance metadata while
+                            # replacing only fields produced by OCR.
+                            source.extracted = {**(source.extracted or {}), **extracted}
+                            source.status = "needs_review"
+                        run = await session.scalar(
+                            select(ProcessingRun).where(ProcessingRun.message_id == row_id)
+                        )
+                        run.status, run.error = "completed", None
+                        await session.commit()
+                        self.last_success_at, self.last_error = datetime.now(UTC), None
+                        return
+                    incoming = await self._prepare(session, telegram, row)
                 else:
                     # Historical interrupted text/voice processing can be recovered too.
                     incoming = IncomingMessage(
@@ -346,17 +556,42 @@ class TelegramRuntime:
                 )
                 run.status, run.error = "failed", "unsupported_media"
                 self.last_media_error = "unsupported_media"
-                # Explicitly requested unsupported media gets a durable explanation.
-                session.add(
-                    Outbox(
-                        source_message_id=row_id,
-                        revision=row.revision,
-                        athlete_id=row.athlete_id,
-                        telegram_chat_id=row.telegram_chat_id,
-                        reply_to_message_id=row.telegram_message_id,
-                        text=str(exc),
+                # In a shared chat, an unsolicited voice/video failure should
+                # not create a noisy bot reply.  Private messages and direct
+                # requests still receive a durable, useful explanation.
+                reply_to_sam = False
+                try:
+                    saved = row.attachment_data.get("telegram_payload", {})
+                    parent = saved.get("reply_to_message", {})
+                    reply_to_sam = (
+                        self._bot_id is not None
+                        and parent.get("from", {}).get("id") == self._bot_id
+                    )
+                except AttributeError:
+                    reply_to_sam = False
+                historical_catalog = (
+                    (row.processing_data or {}).get("catalog_recovery", {}).get("version")
+                    == "historical-catalog-v1"
+                )
+                explain = not historical_catalog and (
+                    row.telegram_chat_id > 0
+                    or is_directly_addressed(
+                        row.raw_text or row.transcript or "",
+                        is_reply_to_sam=reply_to_sam,
+                        allow_transcription_aliases=row.message_type in {"voice", "video_note"},
                     )
                 )
+                if explain:
+                    session.add(
+                        Outbox(
+                            source_message_id=row_id,
+                            revision=row.revision,
+                            athlete_id=row.athlete_id,
+                            telegram_chat_id=row.telegram_chat_id,
+                            reply_to_message_id=row.telegram_message_id,
+                            text=str(exc),
+                        )
+                    )
                 await session.commit()
             except Exception as exc:  # noqa: BLE001 - classify media/provider failures for retry
                 await session.rollback()
@@ -374,7 +609,42 @@ class TelegramRuntime:
                 self.last_error = f"processing:{type(exc).__name__}"
                 logger.warning("Message %s processing deferred: %s", row_id, type(exc).__name__)
 
-    async def _prepare(self, message: TelegramMessage, row: Message) -> IncomingMessage | None:
+    async def _preflight_media_request(
+        self, session, *, athlete: Athlete | None, row: Message, request_text: str
+    ) -> str | None:
+        """Run policy with the actual request while preserving the raw source text."""
+        if athlete is None:
+            return "Не удалось проверить автора запроса. Пришли материал заново в личный чат."
+        recovery = (row.processing_data or {}).get("catalog_recovery", {})
+        if recovery.get("version") == "historical-catalog-v1":
+            # This operator-selected private batch was already scoped by owner
+            # and date. Do not charge old screenshots against the athlete's
+            # live request quota or spend a classifier call per image.
+            return None
+        from app.request_policy import preflight_request
+
+        return await preflight_request(
+            session,
+            athlete=athlete,
+            message=row,
+            ai=self.processor.ai,
+            settings=self.settings,
+            text=request_text,
+        )
+
+    async def _reserve_media_budget(
+        self, session, *, athlete: Athlete | None, row: Message
+    ) -> str | None:
+        """Reserve the per-message allowance before downloading/transcribing media."""
+        if athlete is None:
+            return "Не удалось проверить автора запроса. Пришли материал заново в личный чат."
+        from app.request_policy import reserve_budget
+
+        return await reserve_budget(session, athlete=athlete, message=row, settings=self.settings)
+
+    async def _prepare(
+        self, session, message: TelegramMessage, row: Message
+    ) -> IncomingMessage | None:
         text = message.text or message.caption or ""
         attachment = dict(row.attachment_data)
         transcript = row.transcript
@@ -388,8 +658,21 @@ class TelegramRuntime:
                 ):
                     video, source = candidate.document, candidate
                     break
-        requested = bool(video and should_process_video(text, chat_type=message.chat.type))
         circular = bool(source.video_note) if source else False
+        requested = bool(video and should_process_video(text, chat_type=message.chat.type))
+        # Private regular videos opt into visual analysis by being sent.  A
+        # circular video is voice-like instead: without an explicit technique
+        # request, transcribe and scope-check its spoken report only.
+        if circular and not _VIDEO_ANALYSIS_REQUEST.search(text):
+            requested = False
+        if (
+            video
+            and source is not message
+            and (not source or not source.from_user or source.from_user.id != message.from_user.id)
+        ):
+            raise PermanentMediaError(
+                "Можно разбирать только своё видео. Пришли свой ролик с коротким запросом."
+            )
         if video and not requested and not circular:
             if source is message:
                 attachment["media_status"] = "ignored_not_requested"
@@ -403,16 +686,47 @@ class TelegramRuntime:
                 "Фото сохранил, но разбор скриншотов пока не подключён. Нужные показатели можно написать или наговорить."
             )
         if message.voice:
+            duration = getattr(message.voice, "duration", None)
+            if not isinstance(duration, int) or duration <= 0:
+                raise PermanentMediaError(
+                    "Неизвестна длительность голосового сообщения; пришли короткую запись."
+                )
+            if duration > self.settings.policy_audio_max_seconds:
+                raise PermanentMediaError(
+                    "Голосовое слишком длинное для разбора. Пришли фрагмент до 3 минут."
+                )
+            athlete = await session.get(Athlete, row.athlete_id)
+            refusal = await self._reserve_media_budget(session, athlete=athlete, row=row)
+            if refusal:
+                raise PermanentMediaError(refusal)
             if transcript is None:
                 buffer = BytesIO()
                 await self.bot.download(message.voice, destination=buffer)
                 transcript = await self.processor.ai.transcribe(buffer.getvalue())
+                # Keep a completed transcription even when subsequent scope
+                # policy refuses it; it is needed to determine whether a group
+                # refusal was explicitly addressed to Sam.
+                row.transcript = transcript
                 attachment.update(
                     file_id=message.voice.file_id,
                     transcription_model=self.settings.transcription_model,
                 )
             text = transcript
+            refusal = await self._preflight_media_request(
+                session, athlete=athlete, row=row, request_text=transcript or ""
+            )
+            if refusal:
+                raise PermanentMediaError(refusal)
         elif video:
+            duration = getattr(video, "duration", None)
+            if not isinstance(duration, int) or duration <= 0:
+                raise PermanentMediaError(
+                    "Неизвестна длительность видео; пришли короткий фрагмент."
+                )
+            if duration > self.settings.policy_video_max_seconds:
+                raise PermanentMediaError(
+                    "Видео слишком длинное для разбора. Пришли фрагмент до 5 минут."
+                )
             size = getattr(video, "file_size", None)
             attachment.update(
                 file_id=video.file_id,
@@ -424,6 +738,23 @@ class TelegramRuntime:
                     f"Видео весит {size / 1048576:.1f} MB. Telegram отдаёт этому боту файлы до 20 MB; "
                     "пришли короткий фрагмент или сжатую версию."
                 )
+            # A regular video needs an explicit request.  A circular video is
+            # voice-like: preserve its transcript-only path for existing users.
+            if message.chat.type == ChatType.PRIVATE and not circular and not text.strip():
+                raise PermanentMediaError(
+                    "Опиши, что в твоей технике нужно разобрать, и пришли короткое своё видео."
+                )
+            athlete = await session.get(Athlete, row.athlete_id)
+            if circular:
+                refusal = await self._reserve_media_budget(session, athlete=athlete, row=row)
+                if refusal:
+                    raise PermanentMediaError(refusal)
+            if requested:
+                refusal = await self._preflight_media_request(
+                    session, athlete=athlete, row=row, request_text=text
+                )
+                if refusal:
+                    raise PermanentMediaError(refusal)
             analysis = attachment.get("vision_analysis") if requested else None
             if (requested and not analysis) or (circular and transcript is None):
                 buffer = BytesIO()
@@ -433,6 +764,24 @@ class TelegramRuntime:
                     transcript = await self.processor.ai.transcribe(
                         video_bytes, filename="video.mp4"
                     )
+                    row.transcript = transcript
+                    # A caption may have been allowed, but it cannot authorize
+                    # unrelated spoken content.  Keep the budget reservation
+                    # while forcing a new scope decision for the transcript.
+                    if "request_policy" in (row.processing_data or {}):
+                        row.processing_data = {
+                            key: value
+                            for key, value in row.processing_data.items()
+                            if key != "request_policy"
+                        }
+                    refusal = await self._preflight_media_request(
+                        session,
+                        athlete=athlete,
+                        row=row,
+                        request_text=transcript or "",
+                    )
+                    if refusal:
+                        raise PermanentMediaError(refusal)
                 if requested:
                     frames = await extract_video_frames(
                         video_bytes,
@@ -499,20 +848,65 @@ class TelegramRuntime:
             )
             if item is None:
                 return
+            # Model-produced replies generated under an earlier privacy policy
+            # can contain context which newer retrieval rules would not expose.
+            # Keep the audit record, but never deliver that stale response.
+            if item.source_message_id is not None:
+                source_run = await session.scalar(
+                    select(ProcessingRun).where(ProcessingRun.message_id == item.source_message_id)
+                )
+                if (
+                    source_run is not None
+                    and source_run.prompt_version
+                    and source_run.prompt_version not in SELF_ONLY_PROMPT_VERSIONS
+                    and (source_run.extraction_model or source_run.coaching_model)
+                ):
+                    item.status, item.error = "superseded", "obsolete_response_policy"
+                    await session.commit()
+                    return
+            if await self._suppress_stale_reminder(session, item):
+                await session.commit()
+                return
             parts = split_reply(item.text)
             item.attempts += 1
             await session.commit()
             try:
-                for part in parts[len(item.sent_message_ids) :]:
+                payload = item.payload or {}
+                document = payload.get("document")
+                if document and not item.sent_message_ids:
+                    filename, content = document.get("filename"), document.get("text")
+                    if not isinstance(filename, str) or not isinstance(content, str):
+                        raise ValueError("invalid document payload")
+                    sent_doc = await self.bot.send_document(
+                        chat_id=item.telegram_chat_id,
+                        document=BufferedInputFile(content.encode("utf-8"), filename=filename),
+                        reply_parameters=self._reply_parameters(item.reply_to_message_id),
+                    )
+                    item.sent_message_ids = [*item.sent_message_ids, sent_doc.message_id]
+                    # Persist the irreversible document send before attempting
+                    # its accompanying message, so a later retry cannot resend it.
+                    await self.processor.save_outgoing(
+                        session,
+                        telegram_message_id=sent_doc.message_id,
+                        telegram_chat_id=item.telegram_chat_id,
+                        athlete_id=item.athlete_id,
+                        text=f"[document] {filename}",
+                        timestamp=sent_doc.date,
+                        reply_to_message_id=item.reply_to_message_id,
+                    )
+                    await session.commit()
+                sent_text_parts = len(item.sent_message_ids) - (1 if document else 0)
+                for part in parts[sent_text_parts:]:
+                    markup = self._keyboard(payload) if sent_text_parts == 0 else None
                     sent = await self.bot.send_message(
                         chat_id=item.telegram_chat_id,
                         text=format_telegram_reply(part),
                         parse_mode=ParseMode.HTML,
-                        reply_parameters=ReplyParameters(
-                            message_id=item.reply_to_message_id, allow_sending_without_reply=True
-                        ),
+                        reply_parameters=self._reply_parameters(item.reply_to_message_id),
+                        reply_markup=markup,
                     )
                     item.sent_message_ids = [*item.sent_message_ids, sent.message_id]
+                    sent_text_parts += 1
                     await self.processor.save_outgoing(
                         session,
                         telegram_message_id=sent.message_id,
@@ -550,6 +944,105 @@ class TelegramRuntime:
                 item.next_attempt_at = datetime.now(UTC) + timedelta(seconds=delay)
                 await session.commit()
                 self.last_error = f"delivery:{type(exc).__name__}"
+
+    @staticmethod
+    def _reply_parameters(reply_to_message_id: int | None) -> ReplyParameters | None:
+        return (
+            ReplyParameters(message_id=reply_to_message_id, allow_sending_without_reply=True)
+            if reply_to_message_id is not None and reply_to_message_id > 0
+            else None
+        )
+
+    @staticmethod
+    def _keyboard(payload: dict) -> InlineKeyboardMarkup | None:
+        rows = payload.get("buttons")
+        if not isinstance(rows, list):
+            return None
+        keyboard: list[list[InlineKeyboardButton]] = []
+        for row in rows:
+            if not isinstance(row, list):
+                return None
+            buttons: list[InlineKeyboardButton] = []
+            for button in row:
+                if not isinstance(button, dict):
+                    return None
+                text, data = button.get("text"), button.get("data")
+                if (
+                    not isinstance(text, str)
+                    or not isinstance(data, str)
+                    or not _CALLBACK_DATA.fullmatch(data)
+                ):
+                    return None
+                buttons.append(InlineKeyboardButton(text=text[:64], callback_data=data))
+            if buttons:
+                keyboard.append(buttons)
+        return InlineKeyboardMarkup(inline_keyboard=keyboard) if keyboard else None
+
+    async def _suppress_stale_reminder(self, session, item: Outbox) -> bool:
+        """Check opt-in and the current session again immediately before send."""
+        preference = await session.get(TrainingPreference, item.athlete_id)
+        athlete = await session.get(Athlete, item.athlete_id)
+        # Group posts are optional sharing too. Do not deliver an already
+        # queued reply after a user revokes group sharing.
+        if item.telegram_chat_id < 0 and (
+            athlete is None
+            or not athlete.active
+            or preference is None
+            or preference.shared_chat_id != item.telegram_chat_id
+        ):
+            item.status, item.error = "superseded", "group_sharing_revoked"
+            return True
+        if not item.dedupe_key or not item.dedupe_key.startswith("morning:"):
+            return False
+        parts = item.dedupe_key.split(":")
+        if len(parts) != 3:
+            item.status, item.error = "superseded", "invalid_reminder_key"
+            return True
+        try:
+            athlete_id = int(parts[1])
+            local_day = datetime.fromisoformat(parts[2]).date()
+        except ValueError:
+            item.status, item.error = "superseded", "invalid_reminder_key"
+            return True
+        athlete = await session.get(Athlete, athlete_id)
+        preference = await session.get(TrainingPreference, athlete_id)
+        if (
+            athlete is None
+            or not athlete.active
+            or preference is None
+            or preference.morning_time is None
+            or preference.private_chat_id != item.telegram_chat_id
+        ):
+            item.status, item.error = "superseded", "reminder_opt_out"
+            return True
+        try:
+            current_day = datetime.now(UTC).astimezone(ZoneInfo(athlete.timezone)).date()
+        except ZoneInfoNotFoundError:
+            item.status, item.error = "superseded", "invalid_reminder_timezone"
+            return True
+        if current_day != local_day:
+            item.status, item.error = "superseded", "stale_reminder_day"
+            return True
+        plan = await latest_session_plan(session, athlete_id=athlete_id, day=local_day)
+        if plan is None or plan.status != "active":
+            item.status, item.error = "superseded", "stale_reminder_plan"
+            return True
+        queued_plan_id = (item.payload or {}).get("reminder_plan_id")
+        if queued_plan_id != plan.id:
+            previous = queued_plan_id
+            item.text = "План на сегодня:\n\n" + render_training_plan(plan)
+            item.payload = {
+                **(item.payload or {}),
+                "reminder_plan_id": plan.id,
+                "reminder_replaced_from": previous,
+                "buttons": [
+                    [
+                        {"text": "Открыть сессию", "data": f"train:session:{plan.id}"},
+                        {"text": "Начать лог", "data": f"train:log:{plan.id}"},
+                    ]
+                ],
+            }
+        return False
 
     async def queue_health(self) -> dict:
         async with self.database.sessions() as session:

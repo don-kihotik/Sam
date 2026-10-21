@@ -7,7 +7,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.db.models import Athlete, Correction, Event, Fact, Message, Plan, Workout, WorkoutEntry
+from app.db.models import (
+    Athlete,
+    Correction,
+    Event,
+    Fact,
+    Message,
+    Plan,
+    TrainingPreference,
+    Workout,
+    WorkoutEntry,
+)
 from app.grades import grade_rank
 
 ALEXEY_PROFILE = {
@@ -66,6 +76,23 @@ async def seed_initial_data(session: AsyncSession, settings: Settings) -> None:
         elif uid is not None:
             athlete.telegram_user_id = uid
         athletes[name] = athlete
+        # One-time legacy consent. Never overwrite /sharing off or notification preferences.
+        preference = await session.get(TrainingPreference, athlete.id)
+        if preference is None:
+            previous_private = await session.scalar(
+                select(Message.telegram_chat_id)
+                .where(Message.athlete_id == athlete.id, Message.telegram_chat_id > 0)
+                .order_by(Message.id.desc())
+                .limit(1)
+            )
+            session.add(
+                TrainingPreference(
+                    athlete_id=athlete.id,
+                    shared_chat_id=settings.telegram_allowed_chat_id,
+                    private_chat_id=previous_private,
+                    profile={},
+                )
+            )
     alexey = athletes["Alexey"]
     baseline = await session.scalar(
         select(Workout)
@@ -211,6 +238,7 @@ async def seed_initial_data(session: AsyncSession, settings: Settings) -> None:
             session.add(
                 Plan(
                     athlete_id=athlete.id,
+                    scope="program",
                     visibility="group",
                     start_date=date(2026, 9, 12),
                     end_date=None,
@@ -232,4 +260,23 @@ async def seed_initial_data(session: AsyncSession, settings: Settings) -> None:
                     },
                 )
             )
+    # The additive migration defaults historical free-form plans to "week".
+    # Only the exact configuration-backed, undated baseline is a program; do
+    # not reinterpret user-authored plans or revive superseded revisions.
+    configured_plans = (
+        await session.scalars(
+            select(Plan).where(
+                Plan.athlete_id.in_([athlete.id for athlete in athletes.values()]),
+                Plan.scope == "week",
+                Plan.end_date.is_(None),
+            )
+        )
+    ).all()
+    for plan in configured_plans:
+        if (
+            plan.source_message_ids == [source.id]
+            and (plan.content or {}).get("schedule_status")
+            == "No fixed daily prescription; adapt to reported availability and recovery."
+        ):
+            plan.scope = "program"
     await session.commit()

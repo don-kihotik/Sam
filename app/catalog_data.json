@@ -1,0 +1,2067 @@
+{
+    "inventory_version": 1,
+    "protocols": [
+        {
+            "slug": "static-holds-b",
+            "title": "Static Holds - B",
+            "category": "conditioning",
+            "status": "ready",
+            "original_category": "Conditioning",
+            "original_subcategory": "Core",
+            "purpose": [
+                "core isometric endurance"
+            ],
+            "effects": [
+                {
+                    "text": "hold plank, side-plank and hollow-body positions",
+                    "basis": "source"
+                }
+            ],
+            "duration": {
+                "source_minutes": 15
+            },
+            "equipment": {
+                "required_all": [
+                    "exercise mat"
+                ],
+                "required_any": []
+            },
+            "location": {
+                "allowed": [
+                    "home",
+                    "gym",
+                    "climbing_gym"
+                ]
+            },
+            "eligibility": {},
+            "restrictions": [
+                {
+                    "kind": "form",
+                    "text": "Stop the hold and rest if the lower back arches."
+                }
+            ],
+            "steps": [
+                {
+                    "type": "sequence",
+                    "label": "Complete each exercise before the next",
+                    "children": [
+                        {
+                            "type": "action",
+                            "label": "Plank",
+                            "sets": 4,
+                            "seconds": 30,
+                            "rest_seconds": 30
+                        },
+                        {
+                            "type": "side",
+                            "label": "Side plank",
+                            "sets": 2,
+                            "seconds": 30,
+                            "rest_seconds": 30,
+                            "sides": [
+                                "left",
+                                "right"
+                            ]
+                        },
+                        {
+                            "type": "action",
+                            "label": "Hollow body hold",
+                            "sets": 4,
+                            "seconds": 30,
+                            "rest_seconds": 30
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "slug": "no-hands-slab",
+            "title": "No Hands Slab",
+            "category": "technique",
+            "status": "ready",
+            "original_category": "unknown",
+            "original_subcategory": "unknown",
+            "purpose": [
+                "footwork",
+                "movement initiation"
+            ],
+            "effects": [
+                {
+                    "text": "practice initiating climbing movement with the feet",
+                    "basis": "source"
+                }
+            ],
+            "duration": {
+                "estimated_minutes": 18,
+                "assumption": "six climbs plus one to two minutes of rest between repeats"
+            },
+            "equipment": {
+                "required_all": [
+                    "slab wall"
+                ],
+                "required_any": []
+            },
+            "location": {
+                "allowed": [
+                    "climbing_gym",
+                    "crag"
+                ]
+            },
+            "eligibility": {},
+            "restrictions": [
+                {
+                    "kind": "safety",
+                    "text": "Use hands only to catch a slip, not to initiate movement."
+                }
+            ],
+            "steps": [
+                {
+                    "type": "repeat",
+                    "sets": 1,
+                    "reps": 6,
+                    "children": [
+                        {
+                            "type": "action",
+                            "label": "Hands-free slab climb",
+                            "instruction": "Use an easy inclined wall with large holds; climb using feet only; rest one to two minutes before each next repeat."
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "slug": "dynamic-climbing",
+            "title": "Dynamic Climbing",
+            "category": "technique",
+            "status": "needs_review",
+            "original_category": "unknown",
+            "original_subcategory": "unknown",
+            "source_completeness": "conflicting",
+            "purpose": ["explore momentum between holds rather than static climbing"],
+            "effects": [{"text": "practice gentle dynamic movement between holds", "basis": "source"}],
+            "duration": {},
+            "equipment": {"required_all": ["bouldering wall"], "required_any": []},
+            "eligibility": {},
+            "restrictions": [{"kind": "intensity", "text": "Use very easy warm-up problems on a wall from vertical to 20 degrees overhanging; complete a light movement warm-up first."}],
+            "steps": [{"type": "action", "label": "Dynamic boulder", "sets": 3, "reps": 1, "rest_seconds": 120, "instruction": "Use arms and legs to make a gentle swing and move hold-to-hold without stopping. The description also says to repeat the same problem twice, then drill two more boulders, but concludes with three different boulders once each."}],
+            "reason": "Source count of climbs conflicts: its table and conclusion say three boulders once each, while its instructions say repeat each problem twice."
+        },
+        {
+            "slug": "efficiency-training",
+            "title": "Efficiency Training",
+            "category": "technique",
+            "status": "ready",
+            "original_category": "unknown",
+            "original_subcategory": "unknown",
+            "purpose": [
+                "movement efficiency",
+                "footwork"
+            ],
+            "effects": [
+                {
+                    "text": "practice hip engagement and footwork on a familiar grade",
+                    "basis": "source"
+                }
+            ],
+            "duration": {
+                "estimated_minutes": 45,
+                "assumption": "four boulders, three attempts each, with prescribed rests"
+            },
+            "equipment": {
+                "required_all": [
+                    "bouldering wall"
+                ],
+                "required_any": []
+            },
+            "location": {
+                "allowed": [
+                    "climbing_gym",
+                    "crag"
+                ]
+            },
+            "eligibility": {
+                "required_profile": [
+                    "flash_grade"
+                ]
+            },
+            "restrictions": [
+                {
+                    "kind": "intensity",
+                    "text": "Choose boulders around the climber's flash grade."
+                }
+            ],
+            "steps": [
+                {
+                    "type": "repeat",
+                    "sets": 4,
+                    "children": [
+                        {
+                            "type": "repeat",
+                            "reps": 3,
+                            "children": [
+                                {
+                                    "type": "action",
+                                    "label": "Repeat one boulder",
+                                    "instruction": "Choose one move to make more efficient on each next attempt.",
+                                    "rest_seconds_min": 180,
+                                    "rest_seconds_max": 300
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "type": "rest",
+                    "seconds": 300,
+                    "instruction": "Rest five minutes before the next boulder."
+                }
+            ]
+        },
+        {
+            "slug": "basic-grip-engagement",
+            "title": "Basic Grip Engagement",
+            "category": "conditioning",
+            "status": "needs_review",
+            "original_category": "unknown",
+            "original_subcategory": "unknown",
+            "source_completeness": "conflicting",
+            "purpose": ["quickly engage different hold types with introductory fingerboarding"],
+            "effects": [{"text": "practice half-crimp, sloper, and front-three open grip engagement", "basis": "source"}],
+            "duration": {},
+            "equipment": {"required_all": ["hangboard", "large flat edge", "sloper"], "required_any": []},
+            "eligibility": {},
+            "restrictions": [{"kind": "form", "text": "Keep feet on the ground; use a half crimp on the large flat edge."}],
+            "steps": [{"type": "sequence", "label": "Three hold types", "children": [
+                {"type": "action", "label": "Isometric hang: half crimp", "sets": 1, "reps": 5, "seconds": 5, "rest_seconds": 5, "instruction": "Table values; description instead says 3-second holds and 3-second rests."},
+                {"type": "action", "label": "Isometric hang: sloper", "sets": 1, "reps": 5, "seconds": 5, "rest_seconds": 5, "instruction": "Table values; description instead says 3-second holds and 3-second rests."},
+                {"type": "action", "label": "Isometric hang: Front 3 Open", "sets": 1, "reps": 5, "seconds": 5, "rest_seconds": 5, "instruction": "Table values; description instead says 3-second holds and 3-second rests."}
+            ]}],
+            "reason": "Source table states 5/5-second work/rest while description states 3/3-second work/rest; do not select either automatically."
+        },
+        {
+            "slug": "pull-up-negatives-a",
+            "title": "Pull-up Negatives - A",
+            "category": "conditioning",
+            "status": "draft",
+            "original_category": "unknown",
+            "original_subcategory": "unknown",
+            "source_completeness": "complete", "purpose": ["pulling strength"], "effects": [{"text":"controlled eccentric pull-ups","basis":"source"}], "duration":{"source_minutes":10}, "equipment":{"required_all":["pull-up bar"],"required_any":["box","solid step"],"alternatives":["assistance band","pulley"]}, "eligibility":{}, "restrictions":[{"kind":"tempo","text":"Lower over two to three seconds with shoulders engaged."}], "steps":[{"type":"repeat","sets":3,"reps":5,"rest_seconds":120,"children":[{"type":"action","label":"Negative pull-up"}]}], "reason":"Unready pending individual elbow/shoulder tolerance review."
+        },
+        {
+            "slug": "dyno-training",
+            "title": "Dyno Training",
+            "category": "technique",
+            "status": "draft",
+            "original_category": "unknown",
+            "original_subcategory": "unknown",
+            "source_completeness":"complete", "purpose":["dynamic climbing practice"], "effects":[{"text":"progressively enlarge dynos by removing holds","basis":"source"}], "duration":{"source_minutes":60}, "equipment":{"required_all":["bouldering wall"],"required_any":[]}, "eligibility":{}, "restrictions":[{"kind":"safety","text":"Only after thorough warm-up; use practiced falling and safe heights."}], "steps":[{"type":"repeat","sets":3,"rest_seconds":300,"children":[{"type":"repeat","reps":4,"rest_seconds":120,"children":[{"type":"action","label":"Progressive dyno boulder"}]}]}], "reason":"Unready due to fall-risk screening and grade/range suitability."
+        },
+        {
+            "slug": "lock-off-training",
+            "title": "Lock-off Training",
+            "category": "conditioning",
+            "status": "draft",
+            "original_category": "unknown",
+            "original_subcategory": "unknown",
+            "source_completeness":"complete", "purpose":["lock-off strength"], "effects":[{"text":"practice progressively harder hand bumps on each side","basis":"source"}], "duration":{"source_minutes":20}, "equipment":{"required_all":["bouldering wall"],"required_any":[]}, "eligibility":{}, "restrictions":[{"kind":"safety","text":"Skip or use caution with elbow tendinitis; avoid deep acute-angle lock-offs."}], "steps":[{"type":"repeat","sets":3,"rest_seconds":180,"children":[{"type":"side","reps":2,"rest_seconds":60,"sides":["left","right"],"children":[{"type":"action","label":"Four-move lock-off and bump"}]}]}], "reason":"Unready pending elbow-history screening."
+        },
+        {
+            "slug": "max-hangs-90",
+            "title": "Max Hangs - 90%",
+            "category": "conditioning",
+            "status": "needs_review",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Finger Strength",
+            "load_basis": {
+                "kind": "percent_of_total_load",
+                "percent": 90,
+                "test": "matching seven-second finger-strength assessment",
+                "formula": "body mass plus test-added load",
+                "requires": ["matching 20 mm edge", "matching grip"]
+            },
+            "source_completeness": "partial",
+            "purpose": ["forearm and finger strength"],
+            "effects": [{"text": "improve forearm and finger strength", "basis": "source"}],
+            "duration": {"work_seconds": 60, "rest_seconds_between_sets": 120},
+            "equipment": {"required_all": ["20 mm edge"], "required_any": ["fingerboard", "hangboard"]},
+            "eligibility": {"required_profile": ["matching seven-second finger-strength assessment"]},
+            "restrictions": [
+                {"kind": "load", "text": "Warm up progressively for this specific hold and grip; reduce weight if a full 10-second hang cannot be completed."},
+                {"kind": "safety", "text": "Put feet on the floor immediately if fingers or arm start to open; do not continue opening."},
+                {"kind": "retest", "text": "Retest every 4–8 weeks to establish new loadings."}
+            ],
+            "steps": [{"type": "action", "label": "Dead hang: 20 mm edge", "sets": 6, "reps": 1, "seconds": 10, "rest_seconds": 120, "instruction": "Use 90% of maximal total load from the matching seven-second finger-strength self-assessment."}],
+            "reason": "Requires a matching, current seven-second total-load test and exact grip/edge baseline."
+        },
+        {
+            "slug": "boulder-campus",
+            "title": "Boulder Campus",
+            "category": "climbing",
+            "status": "draft",
+            "original_category": "unknown",
+            "original_subcategory": "unknown",
+            "source_completeness":"complete", "purpose":["dynamic pulling power"], "effects":[{"text":"campus easy overhanging boulders without feet","basis":"source"}], "duration":{"source_minutes":40}, "equipment":{"required_all":["bouldering wall"],"required_any":[]}, "eligibility":{"required_profile":["max_grade"]}, "restrictions":[{"kind":"safety","text":"Use finger-friendly holds; avoid pockets and small edges unless adapted."}], "steps":[{"type":"repeat","sets":4,"rest_seconds":180,"children":[{"type":"repeat","reps":3,"rest_seconds":180,"children":[{"type":"action","label":"Feet-off boulder"}]}]}], "reason":"Unready due to high finger and shoulder load."
+        },
+        {
+            "slug": "pull-ups-85-2rm",
+            "title": "Pull-ups \u2014 5\u00d73 at 85% of 2RM",
+            "category": "conditioning",
+            "status": "needs_review",
+            "original_category": "unknown",
+            "original_subcategory": "unknown",
+            "source_completeness":"complete", "purpose":["weighted pull-up strength"], "effects":[{"text":"train at 85 percent of two-rep-max total load","basis":"source"}], "load_basis":{"kind":"percent_of_total_load","percent":85,"test":"two-rep-max pull-up","formula":"body mass plus test-added load"}, "duration":{"source_minutes":20}, "equipment":{"required_all":["pull-up bar"],"required_any":[]}, "eligibility":{"required_profile":["pull_up_2rm"]}, "restrictions":[], "steps":[{"type":"repeat","sets":5,"reps":3,"rest_seconds":180,"children":[{"type":"action","label":"Weighted pull-up"}]}], "reason":"Unready: verified two-rep-max baseline absent."
+        },
+        {
+            "slug": "emils-submax-daily-fingerboard-routine",
+            "title": "Emil's Sub-max Daily Fingerboard Routine",
+            "category": "conditioning",
+            "status": "draft",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Finger Strength",
+            "source_completeness": "complete",
+            "purpose": ["source-described low-intensity tendon loading", "recruitment protocol"],
+            "effects": [{"text": "source describes frequent low-intensity loading", "basis": "source"}],
+            "duration": {"source_minutes": 10, "minimum_hours_between_sessions": 6},
+            "equipment": {"required_all": ["18-22 mm edge"], "required_any": ["fingerboard", "hangboard"]},
+            "eligibility": {},
+            "restrictions": [
+                {"kind": "intensity", "text": "Keep intensity very low: only a small forearm strain when pulling (2/10 RPE)."},
+                {"kind": "form", "text": "Keep feet on the floor for all exercises."},
+                {"kind": "spacing", "text": "Use a six-hour window between this workout and another workout or climbing session."},
+                {"kind": "medical", "text": "The source says it can be used during injury recovery; this is a source claim, not medical guidance."}
+            ],
+            "steps": [{"type": "sequence", "label": "Perform each grip in order", "children": [
+                {"type": "action", "label": "Isometric hang", "sets": 1, "reps": 6, "seconds": 10, "rest_seconds": 20, "instruction": "2/10 RPE"},
+                {"type": "action", "label": "Isometric hang: Front 3 Open", "sets": 1, "reps": 6, "seconds": 10, "rest_seconds": 20, "instruction": "2/10 RPE"},
+                {"type": "action", "label": "Isometric hang: Front 2 Open", "sets": 1, "reps": 2, "seconds": 10, "rest_seconds": 20, "instruction": "2/10 RPE"},
+                {"type": "action", "label": "Isometric hang: Middle 2 Open", "sets": 1, "reps": 2, "seconds": 10, "rest_seconds": 20, "instruction": "2/10 RPE"},
+                {"type": "action", "label": "Isometric hang: Front 2 Half Crimp", "sets": 1, "reps": 2, "seconds": 10, "rest_seconds": 20, "instruction": "2/10 RPE"},
+                {"type": "action", "label": "Isometric hang: Middle 2 Half Crimp", "sets": 1, "reps": 2, "seconds": 10, "rest_seconds": 20, "instruction": "2/10 RPE"}
+            ]}],
+            "reason": "Unready pending review of the source's injury-prevention and performance claims."
+        },
+        {
+            "slug": "hard-projecting",
+            "title": "Hard Projecting",
+            "category": "climbing",
+            "status": "draft",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Bouldering",
+            "source_completeness": "complete",
+            "purpose": ["limit boulder projecting"],
+            "effects": [{"text": "practice hard individual moves and links", "basis": "source"}],
+            "duration": {"source_minutes_min": 60, "source_minutes_max": 90},
+            "equipment": {"required_all": [], "required_any": ["spray wall", "training board"]},
+            "location": {"allowed": ["climbing_gym"]},
+            "eligibility": {"required_profile": ["session_grade"]},
+            "restrictions": [{"kind": "intensity", "text": "Use 3–5 move problems near session grade; reduce intensity after failures on either first two boulders."}],
+            "steps": [{"type": "repeat", "sets": 4, "rest_seconds": 180, "children": [{"type": "action", "label": "Project one 3–5 move boulder", "instruction": "Work moves and links for up to 20 minutes; rest as needed between attempts."}]}],
+            "reason": "Unready pending explicit session-grade profile and review of advanced intensity selection."
+        },
+        {
+            "slug": "campus-latches",
+            "title": "Campus Latches",
+            "category": "conditioning",
+            "status": "needs_review",
+            "original_category": "unknown",
+            "original_subcategory": "unknown",
+            "source_completeness": "complete",
+            "purpose": ["one-arm campus latching"],
+            "effects": [{"text": "practice controlled one-arm campus-board latches", "basis": "source"}],
+            "duration": {},
+            "equipment": {"required_all": ["campus board", "soft landing mat"], "required_any": []},
+            "eligibility": {"minimum_boulder_grade": "V8/7B"},
+            "restrictions": [
+                {"kind": "safety", "text": "Only for healthy, non-injured advanced climbers after a thorough warm-up; do not perform tired or at the end of a climbing session."},
+                {"kind": "form", "text": "Latch with a slight elbow bend (about 120 degrees) and hold control for 1–2 seconds before dropping."},
+                {"kind": "adaptation", "text": "If control is not maintained, use a larger rung; if still unable, use two arms. Elite climbers may use a smaller rung."}
+            ],
+            "steps": [{"type": "repeat", "sets": 3, "rest_seconds": 120, "children": [{"type": "side", "label": "Campus latch", "reps": 3, "rest_seconds": 10, "sides": ["right", "left"], "children": [{"type": "action", "label": "One-arm jump and latch"}]}]}],
+            "reason": "Advanced-only source protocol; V8/7B+ eligibility and safety review required."
+        },
+        {
+            "slug": "volume-bouldering",
+            "title": "Volume Bouldering",
+            "category": "climbing",
+            "status": "draft",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Bouldering",
+            "source_completeness": "complete",
+            "purpose": ["bouldering volume", "movement quality"],
+            "effects": [{"text": "complete moderate boulders while conserving energy", "basis": "source"}],
+            "duration": {"source_minutes": 60},
+            "equipment": {"required_all": [], "required_any": ["bouldering wall", "training board"]},
+            "location": {"allowed": ["climbing_gym"]},
+            "eligibility": {"required_profile": ["flash_grade"]},
+            "restrictions": [{"kind": "intensity", "text": "Choose 20 problems one to two grades below flash; lower difficulty if repeated failures or deteriorating technique."}],
+            "steps": [{"type": "repeat", "sets": 20, "rest_seconds": 120, "children": [{"type": "action", "label": "Moderate boulder"}]}],
+            "reason": "Unready until grade-system and selection adaptation are reviewed."
+        },
+        {
+            "slug": "max-hangs-one-arm-90",
+            "title": "Max Hangs - One Arm 90%",
+            "category": "conditioning",
+            "status": "needs_review",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Finger Strength",
+            "source_completeness": "complete",
+            "purpose": ["forearm and finger strength"],
+            "effects": [{"text": "improve one-arm forearm and finger strength", "basis": "source"}],
+            "load_basis": {"kind": "percent_of_total_load", "percent": 90, "test": "matching five-second finger-strength self-assessment", "formula": "body mass plus bodyweight adjustment via pulley", "requires": ["matching 20 mm edge", "matching grip", "matching body position"]},
+            "duration": {"hang_seconds_per_hand": 60, "rest_seconds_between_hands": 30},
+            "equipment": {"required_all": ["20 mm edge", "pulley system"], "required_any": ["fingerboard", "hangboard"]},
+            "eligibility": {"required_profile": ["matching five-second one-arm finger-strength assessment"]},
+            "restrictions": [
+                {"kind": "load", "text": "Warm up progressively for the specific hold, grip, and body position; reduce load if a full 10-second hang cannot be completed."},
+                {"kind": "safety", "text": "Put feet on the floor immediately if fingers or arm start to open; do not continue opening."},
+                {"kind": "retest", "text": "Retest every 4–8 weeks to establish new loadings."}
+            ],
+            "steps": [{"type": "repeat", "sets": 6, "children": [{"type": "side", "label": "One-arm dead hang: 20 mm edge", "reps": 1, "seconds": 10, "rest_seconds": 30, "sides": ["left", "right"], "instruction": "Use 90% of maximal total load from the matching five-second self-assessment."}]}],
+            "reason": "The supplied one-arm test is ten seconds while this protocol requires a matching five-second assessment; do not treat them as interchangeable."
+        },
+        {
+            "slug": "1-on-1-off",
+            "title": "1 On 1 Off",
+            "category": "climbing",
+            "status": "ready",
+            "original_category": "Endurance",
+            "original_subcategory": "Aerobic Capacity",
+            "purpose": [
+                "aerobic endurance"
+            ],
+            "effects": [
+                {
+                    "text": "maintain blood flow and practise recovery during rest",
+                    "basis": "source"
+                }
+            ],
+            "duration": {
+                "estimated_minutes": 20
+            },
+            "equipment": {
+                "required_all": [
+                    "route or circuit wall"
+                ],
+                "required_any": [
+                    "auto_belay",
+                    "rope_belay",
+                    "circuit_board"
+                ]
+            },
+            "location": {
+                "allowed": [
+                    "climbing_gym",
+                    "crag"
+                ]
+            },
+            "eligibility": {
+                "required_profile": [
+                    "flash_grade"
+                ]
+            },
+            "restrictions": [
+                {
+                    "kind": "intensity",
+                    "text": "Use terrain two grades below flash; stop at one minute even on a longer rope route."
+                }
+            ],
+            "steps": [
+                {
+                    "type": "repeat",
+                    "sets": 1,
+                    "reps": 10,
+                    "seconds": 60,
+                    "rest_seconds": 60,
+                    "children": [
+                        {
+                            "type": "action",
+                            "label": "Easy route or circuit interval"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "slug": "1-on-2-off",
+            "title": "1 On 2 Off",
+            "category": "climbing",
+            "status": "ready",
+            "original_category": "Endurance",
+            "original_subcategory": "Aerobic Capacity",
+            "purpose": [
+                "aerobic endurance"
+            ],
+            "effects": [
+                {
+                    "text": "maintain blood flow with longer forced recovery",
+                    "basis": "source"
+                }
+            ],
+            "duration": {
+                "estimated_minutes": 30
+            },
+            "equipment": {
+                "required_all": [
+                    "route or circuit wall"
+                ],
+                "required_any": [
+                    "auto_belay",
+                    "rope_belay",
+                    "circuit_board"
+                ]
+            },
+            "location": {
+                "allowed": [
+                    "climbing_gym",
+                    "crag"
+                ]
+            },
+            "eligibility": {
+                "required_profile": [
+                    "flash_grade"
+                ]
+            },
+            "restrictions": [
+                {
+                    "kind": "intensity",
+                    "text": "Use terrain two grades below flash; each climb lasts at most one minute."
+                }
+            ],
+            "steps": [
+                {
+                    "type": "repeat",
+                    "sets": 1,
+                    "reps": 10,
+                    "seconds": 60,
+                    "rest_seconds": 120,
+                    "children": [
+                        {
+                            "type": "action",
+                            "label": "Easy route or circuit interval"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "slug": "50-50",
+            "title": "50-50",
+            "category": "climbing",
+            "status": "ready",
+            "original_category": "Endurance",
+            "original_subcategory": "Aerobic Capacity",
+            "purpose": [
+                "aerobic endurance",
+                "recovery on wall"
+            ],
+            "effects": [
+                {
+                    "text": "practice recovering on easy terrain before a harder section",
+                    "basis": "source"
+                }
+            ],
+            "duration": {
+                "estimated_minutes": 45
+            },
+            "equipment": {
+                "required_all": [
+                    "route or circuit wall"
+                ],
+                "required_any": []
+            },
+            "location": {
+                "allowed": [
+                    "climbing_gym",
+                    "crag"
+                ]
+            },
+            "eligibility": {
+                "required_profile": [
+                    "onsight_grade"
+                ]
+            },
+            "restrictions": [
+                {
+                    "kind": "intensity",
+                    "text": "Easy half is far below onsight limit; harder half is around onsight grade."
+                }
+            ],
+            "steps": [
+                {
+                    "type": "repeat",
+                    "sets": 3,
+                    "reps": 4,
+                    "children": [
+                        {
+                            "type": "sequence",
+                            "label": "30-move lap",
+                            "children": [
+                                {
+                                    "type": "action",
+                                    "label": "Easy section",
+                                    "reps": 15
+                                },
+                                {
+                                    "type": "action",
+                                    "label": "Harder section",
+                                    "reps": 15
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "type": "rest",
+                    "seconds": 600,
+                    "instruction": "Rest between sets."
+                }
+            ]
+        },
+        {
+            "slug": "7-3s-40",
+            "title": "7:3s 40%",
+            "category": "conditioning",
+            "status": "draft",
+            "original_category": "Endurance",
+            "original_subcategory": "Aerobic Capacity",
+            "load_basis":{"kind":"percent_of_total_load","percent":40,"test":"matching seven-second finger-strength assessment","formula":"body mass plus test-added load","requires":["matching 20 mm edge","matching grip"]},
+            "source_completeness":"complete","purpose":["aerobic finger endurance"],"effects":[{"text":"seven-second repeaters at 40 percent maximum","basis":"source"}],"duration":{"source_minutes":20},"equipment":{"required_all":["20 mm edge"],"required_any":["fingerboard","hangboard"]},"eligibility":{"required_profile":["finger_strength_test"]},"restrictions":[{"kind":"load","text":"40% requires the matching test baseline."}],"steps":[{"type":"repeat","sets":10,"rest_seconds":60,"children":[{"type":"repeat","reps":6,"seconds":7,"rest_seconds":3,"children":[{"type":"action","label":"Dead hang"}]}]}],"reason":"Unready pending matching total-load test, edge and grip baseline."
+        },
+        {
+            "slug": "aero-4s",
+            "title": "Aero 4's",
+            "category": "climbing",
+            "status": "ready",
+            "original_category": "Endurance",
+            "original_subcategory": "Aerobic Capacity",
+            "purpose": [
+                "aerobic endurance",
+                "technique under easy load"
+            ],
+            "effects": [
+                {
+                    "text": "maintain forearm blood flow without high pump until late in the session",
+                    "basis": "source"
+                }
+            ],
+            "duration": {
+                "source_minutes": 65
+            },
+            "equipment": {
+                "required_all": [
+                    "route or circuit wall"
+                ],
+                "required_any": []
+            },
+            "location": {
+                "allowed": [
+                    "climbing_gym",
+                    "crag"
+                ]
+            },
+            "eligibility": {
+                "required_profile": [
+                    "flash_grade"
+                ]
+            },
+            "restrictions": [
+                {
+                    "kind": "intensity",
+                    "text": "Use four routes or circuits about four grades below flash; each rep lasts one to three minutes."
+                }
+            ],
+            "steps": [
+                {
+                    "type": "repeat",
+                    "sets": 4,
+                    "reps": 4,
+                    "children": [
+                        {
+                            "type": "action",
+                            "label": "Easy route or circuit",
+                            "seconds_min": 60,
+                            "seconds_max": 180
+                        }
+                    ]
+                },
+                {
+                    "type": "rest",
+                    "seconds": 600,
+                    "instruction": "Rest between sets."
+                }
+            ]
+        },
+        {
+            "slug": "drop-intervals",
+            "title": "Drop Intervals",
+            "category": "climbing",
+            "status": "ready",
+            "original_category": "Endurance",
+            "original_subcategory": "Aerobic Capacity",
+            "purpose": [
+                "aerobic endurance",
+                "movement quality"
+            ],
+            "effects": [
+                {
+                    "text": "practise aerobic work and recovery on progressively easier boulders",
+                    "basis": "source"
+                }
+            ],
+            "duration": {
+                "source_minutes": null,
+                "assumption": "time varies with climb and transition duration"
+            },
+            "equipment": {
+                "required_all": [
+                    "bouldering wall"
+                ],
+                "required_any": []
+            },
+            "location": {
+                "allowed": [
+                    "climbing_gym",
+                    "crag"
+                ]
+            },
+            "eligibility": {},
+            "restrictions": [
+                {
+                    "kind": "intensity",
+                    "text": "Reduce grade if failing or becoming too pumped."
+                }
+            ],
+            "steps": [
+                {
+                    "type": "repeat",
+                    "sets": 6,
+                    "children": [
+                        {
+                            "type": "sequence",
+                            "label": "Six-boulder drop",
+                            "children": [
+                                {
+                                    "type": "action",
+                                    "label": "Hardest of six nearby boulders"
+                                },
+                                {
+                                    "type": "action",
+                                    "label": "Progress through five easier boulders with minimal rest"
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "type": "rest",
+                    "seconds": 120,
+                    "instruction": "Rest between sets."
+                }
+            ]
+        },
+        {
+            "slug": "lattice-board-1-2s",
+            "title": "Lattice Board 1-2s",
+            "category": "climbing",
+            "status": "draft",
+            "original_category": "Endurance",
+            "original_subcategory": "Aerobic Capacity",
+            "source_completeness": "complete",
+            "purpose": ["steady aerobic climbing with progressive forearm pump"],
+            "effects": [{"text": "climb a Lattice Board circuit at steady pace for one-minute intervals", "basis": "source"}],
+            "duration": {"source_minutes": 30},
+            "equipment": {"required_all": ["Lattice Board"], "required_any": []},
+            "eligibility": {"required_profile": ["max moves score"]},
+            "restrictions": [
+                {"kind": "intensity", "text": "Feel only a slight pump after set 1; mild pump in sets 1–3 and close to failure by sets 8–10. Use an easier circuit if you fall off."},
+                {"kind": "selection", "text": "Source circuit selection: max moves 0–2 minutes easier combination; 2–8 standard Lattice; 8–10 McClure; 10+ create a combination sequence."},
+                {"kind": "adaptation", "text": "If the board is too steep, traverse with feet on the floor for a short period of a set."}
+            ],
+            "steps": [{"type": "action", "label": "Lattice circuit", "sets": 10, "reps": 1, "seconds": 60, "rest_seconds": 120, "instruction": "Climb continuously at a steady pace. Standard circuit follows numbers clockwise; direction may change each set."}],
+            "reason": "Unready pending a confirmed max-moves score and review of board/circuit selection."
+        },
+        {
+            "slug": "open-grip-7-3s-40",
+            "title": "Open Grip 7:3s 40%",
+            "category": "conditioning",
+            "status": "draft",
+            "original_category": "Endurance",
+            "original_subcategory": "Aerobic Capacity",
+            "load_basis":{"kind":"percent_of_total_load","percent":40,"test":"matching seven-second open-grip finger-strength assessment","formula":"body mass plus test-added load","requires":["matching 20 mm edge","four-finger open grip"]},
+            "source_completeness":"complete","purpose":["aerobic finger endurance"],"effects":[{"text":"open-grip repeaters at 40 percent maximum","basis":"source"}],"duration":{"source_minutes":20},"equipment":{"required_all":["20 mm edge"],"required_any":["fingerboard","hangboard"]},"eligibility":{"required_profile":["open_grip_test"]},"restrictions":[{"kind":"grip","text":"All four fingers contact the hold; not a three-finger drag."}],"steps":[{"type":"repeat","sets":10,"rest_seconds":60,"children":[{"type":"repeat","reps":6,"seconds":7,"rest_seconds":3,"children":[{"type":"action","label":"Open-grip dead hang"}]}]}],"reason":"Unready pending matching open-grip test baseline."
+        },
+        {
+            "slug": "7-3s-30",
+            "title": "7:3s 30%",
+            "category": "conditioning",
+            "status": "draft",
+            "original_category": "Endurance",
+            "original_subcategory": "Regeneration",
+            "load_basis":{"kind":"percent_of_total_load","percent":30,"test":"matching seven-second finger-strength assessment","formula":"body mass plus test-added load","requires":["matching 20 mm edge","matching grip"]},
+            "source_completeness":"complete","purpose":["recovery and aerobic finger endurance"],"effects":[{"text":"very low intensity repeaters at 30 percent maximum","basis":"source"}],"duration":{"source_minutes":30},"equipment":{"required_all":["20 mm edge"],"required_any":["fingerboard","hangboard"]},"eligibility":{"required_profile":["finger_strength_test"]},"restrictions":[{"kind":"intensity","text":"Aim for no pump or light pump only."}],"steps":[{"type":"repeat","sets":15,"rest_seconds":60,"children":[{"type":"repeat","reps":6,"seconds":7,"rest_seconds":3,"children":[{"type":"action","label":"Dead hang"}]}]}],"reason":"Unready pending matching total-load test baseline."
+        },
+        {
+            "slug": "continuity-10x10",
+            "title": "Continuity 10x10",
+            "category": "climbing",
+            "status": "needs_review",
+            "original_category": "Endurance",
+            "original_subcategory": "Regeneration",
+            "source_completeness": "complete",
+            "purpose": ["maintain forearm blood flow without a high muscle pump"],
+            "effects": [{"text": "low-intensity continuous climbing", "basis": "source"}],
+            "duration": {"work_seconds": 1800, "rest_seconds_between_sets": 600},
+            "equipment": {"required_all": ["route or circuit wall"], "required_any": []},
+            "eligibility": {"required_profile": ["flash grade"]},
+            "restrictions": [{"kind": "intensity", "text": "Choose an easy route, circuit, or section wall several grades below flash that can be climbed for 10 minutes without stopping and without pump."}],
+            "steps": [{"type": "action", "label": "Continuous easy climbing", "sets": 3, "reps": 1, "seconds": 600, "rest_seconds": 600, "instruction": "The source says this is a great session with a climbing partner."}],
+            "reason": "Source calls it partner-friendly; partner availability and grade-system adaptation need review."
+        },
+        {
+            "slug": "continuity-5x3",
+            "title": "Continuity 5x3",
+            "category": "climbing",
+            "status": "ready",
+            "original_category": "Endurance",
+            "original_subcategory": "Regeneration",
+            "purpose": [
+                "aerobic endurance"
+            ],
+            "effects": [
+                {
+                    "text": "maintain forearm blood flow at very low intensity",
+                    "basis": "source"
+                }
+            ],
+            "duration": {
+                "source_minutes": 25
+            },
+            "equipment": {
+                "required_all": [
+                    "route or circuit wall"
+                ],
+                "required_any": [
+                    "auto_belay",
+                    "circuit_board"
+                ]
+            },
+            "location": {
+                "allowed": [
+                    "climbing_gym"
+                ]
+            },
+            "eligibility": {
+                "required_profile": [
+                    "flash_grade"
+                ]
+            },
+            "restrictions": [
+                {
+                    "kind": "intensity",
+                    "text": "Climb several grades below flash and avoid pump."
+                }
+            ],
+            "steps": [
+                {
+                    "type": "repeat",
+                    "sets": 3,
+                    "seconds": 300,
+                    "children": [
+                        {
+                            "type": "action",
+                            "label": "Continuous easy climbing"
+                        }
+                    ]
+                },
+                {
+                    "type": "rest",
+                    "seconds": 180,
+                    "instruction": "Rest between sets."
+                }
+            ]
+        },
+        {
+            "slug": "7-3s-50",
+            "title": "7:3s 50%",
+            "category": "conditioning",
+            "status": "draft",
+            "original_category": "Power Endurance",
+            "original_subcategory": "Aerobic Power",
+            "load_basis":{"kind":"percent_of_total_load","percent":50,"test":"matching seven-second finger-strength assessment","formula":"body mass plus test-added load","requires":["matching 20 mm edge","matching grip"]},
+            "source_completeness":"complete","purpose":["finger power endurance"],"effects":[{"text":"repeaters at 50 percent total load","basis":"source"}],"duration":{"source_minutes":40},"equipment":{"required_all":["20 mm edge"],"required_any":["fingerboard","hangboard"]},"eligibility":{"required_profile":["finger_strength_test"]},"restrictions":[{"kind":"load","text":"Use same tested hold and grip."}],"steps":[{"type":"repeat","sets":6,"rest_seconds":240,"children":[{"type":"repeat","reps":12,"seconds":7,"rest_seconds":3,"children":[{"type":"action","label":"Dead hang"}]}]}],"reason":"Unready pending matching total-load test baseline."
+        },
+        {
+            "slug": "boulder-intervals",
+            "title": "Boulder Intervals",
+            "category": "climbing",
+            "status": "draft",
+            "original_category": "Power Endurance",
+            "original_subcategory": "Aerobic Power",
+            "source_completeness": "complete",
+            "purpose": ["power endurance on moderate-intensity boulders"],
+            "effects": [{"text": "complete varied moderate boulders quickly with limited rest", "basis": "source"}],
+            "duration": {"source_minutes": 20},
+            "equipment": {"required_all": ["bouldering wall"], "required_any": []},
+            "eligibility": {"required_profile": ["boulder flash grade"]},
+            "restrictions": [{"kind": "intensity", "text": "Use varied-style moderate boulders; aim to send at least 75% first go. A typical boulder takes 20–30 seconds, then use the remaining 30 seconds to rest; expect moderate to high forearm pump."}],
+            "steps": [{"type": "action", "label": "Moderate boulder", "sets": 1, "reps": 20, "rest_seconds": 30, "instruction": "Complete 20 problems within 20 minutes, moving quickly and efficiently."}],
+            "reason": "Unready pending explicit boulder-grade profile and review of moderate-intensity selection."
+        },
+        {
+            "slug": "broken-quarters",
+            "title": "Broken Quarters",
+            "category": "climbing",
+            "status": "draft",
+            "original_category": "Power Endurance",
+            "original_subcategory": "Aerobic Power",
+            "source_completeness": "complete",
+            "purpose": ["power endurance on short to medium routes"],
+            "effects": [{"text": "climb route quarters with short rests", "basis": "source"}],
+            "duration": {"sets": 4, "rest_seconds_between_reps": 15, "rest_seconds_between_sets": 600},
+            "equipment": {"required_all": [], "required_any": ["route wall", "circuit wall", "long boulder sequence"]},
+            "eligibility": {"required_profile": ["onsight grade"]},
+            "restrictions": [
+                {"kind": "selection", "text": "Choose a route or circuit 1–2 grades above max onsight where every section can be climbed in isolation; divide it into four roughly equal sections of about 10 moves."},
+                {"kind": "intensity", "text": "Occasional falls are possible even in set 1; get back on immediately where the fall occurred. Aim to fail only in sets 3–4 from fatigue and pump."},
+                {"kind": "progression", "text": "Later sessions may reduce 15-second between-quarter rests to 10 or 5 seconds on the same climb."}
+            ],
+            "steps": [{"type": "repeat", "sets": 4, "rest_seconds": 600, "children": [{"type": "action", "label": "One route quarter", "reps": 4, "rest_seconds": 15, "instruction": "Climb each quarter in order."}]}],
+            "reason": "Unready pending grade-system profile and high-intensity route selection review."
+        },
+        {
+            "slug": "campus-laddering",
+            "title": "Campus Laddering",
+            "category": "conditioning",
+            "status": "needs_review",
+            "original_category": "Power Endurance",
+            "original_subcategory": "Aerobic Power",
+            "source_completeness": "complete",
+            "purpose": ["power endurance for short to medium length routes"],
+            "effects": [{"text": "train foot-on campus-board laddering to failure", "basis": "source"}],
+            "duration": {"sets": 6, "target_failure_seconds_min": 120, "target_failure_seconds_max": 360, "rest_rule": "one-to-one with preceding actual work time"},
+            "equipment": {"required_all": ["campus board", "foot rung or hold", "soft landing mat"], "required_any": ["chair"]},
+            "eligibility": {},
+            "restrictions": [
+                {"kind": "safety", "text": "Place a soft object or matting underneath in case of a fall."},
+                {"kind": "intensity", "text": "Choose body position and rung size that cause failure within 2–6 minutes; complete each set until extremely pumped and falling off."},
+                {"kind": "progression", "text": "Position hips farther under the hands to increase load."}
+            ],
+            "steps": [{"type": "repeat", "label": "Foot-on campus ladder", "sets": 6, "children": [{"type": "action", "label": "Ladder up and down campus rungs", "instruction": "Keep feet in the same place and use a sequence such as 1-2-3-4-3-2-1 until failure."}, {"type": "rest", "label": "Rest for the preceding set's actual work time", "instruction": "Use the timer: each following rest equals that set's elapsed work time (1:1 work-rest)."}]}],
+            "reason": "Needs review because each rest is determined by the preceding actual work time and the protocol reaches failure."
+        },
+        {
+            "slug": "capacity-power",
+            "title": "Capacity Power",
+            "category": "climbing",
+            "status": "draft",
+            "original_category": "Power Endurance",
+            "original_subcategory": "Aerobic Power",
+            "source_completeness": "complete",
+            "purpose": ["power endurance on medium to long sustained routes"],
+            "effects": [{"text": "repeat sustained routes with one-minute intra-set rest", "basis": "source"}],
+            "duration": {"sets": 5, "rest_seconds_between_reps": 60, "rest_seconds_between_sets": 600},
+            "equipment": {"required_all": [], "required_any": ["route wall", "circuit wall"]},
+            "eligibility": {"required_profile": ["onsight grade"]},
+            "restrictions": [{"kind": "selection", "text": "Choose sustained routes or circuits 1–2 grades below onsight; ideally use five different routes at roughly the same grade."}, {"kind": "intensity", "text": "Aim for moderate pump after set 1 and extreme pump, possibly falling on rep 2, in sets 3–5."}],
+            "steps": [{"type": "repeat", "sets": 5, "rest_seconds": 600, "children": [{"type": "action", "label": "Sustained route or circuit", "reps": 2, "rest_seconds": 60}]}],
+            "reason": "Unready pending grade-system profile and sustained-route selection review."
+        },
+        {
+            "slug": "max-moves-test-foot-on-campus",
+            "title": "Max Moves Test - Foot on Campus",
+            "category": "assessment",
+            "status": "needs_review",
+            "original_category": "Power Endurance",
+            "original_subcategory": "Aerobic Power",
+            "source_completeness": "complete",
+            "purpose": ["measure campus-board power endurance"],
+            "effects": [{"text": "record maximum elapsed time for a foot-on campus sequence", "basis": "source"}],
+            "duration": {"recommended_max_effort_seconds_min": 120, "recommended_max_effort_seconds_max": 600, "rest_seconds": 10, "retest_maximum_frequency_days": 28},
+            "equipment": {"required_all": ["campus board", "foot hold or foot rung", "timer"], "required_any": []},
+            "eligibility": {},
+            "restrictions": [
+                {"kind": "form", "text": "Keep feet stationary, maintain a consistent pace and body position, and do not shake out on the same rung. Use the same body position and warm-up routine between tests."},
+                {"kind": "frequency", "text": "Complete after 24 hours of rest; source recommends no more than once every four weeks."},
+                {"kind": "selection", "text": "Use a difficulty allowing a maximum effort close to the project climb, ideally 2–10 minutes. Harder: hips directly under rungs, smaller rungs, or one foot; easier: hips farther above feet or bigger rungs."}
+            ],
+            "steps": [{"type": "action", "label": "Foot-on campus sequence", "sets": 1, "reps": 1, "rest_seconds": 10, "instruction": "Start matched on rung 1 and repeat 1-2-3-2-1, matching the highest reachable rung (usually 3), to maximum elapsed time. Record elapsed time as score."}],
+            "reason": "Unready pending assessment safety review and explicit result-recording workflow."
+        },
+        {
+            "slug": "route-pyramid",
+            "title": "Route Pyramid",
+            "category": "climbing",
+            "status": "draft",
+            "original_category": "Power Endurance",
+            "original_subcategory": "Aerobic Power",
+            "source_completeness": "complete",
+            "purpose": ["specific route power endurance"],
+            "effects": [{"text": "climb a graded route pyramid from easy to maximum effort and back down", "basis": "source"}],
+            "duration": {"sets": 8, "rest_seconds_between_sets": 600},
+            "equipment": {"required_all": [], "required_any": ["route wall", "circuit wall"]},
+            "eligibility": {"required_profile": ["route grade range"]},
+            "restrictions": [{"kind": "selection", "text": "Choose routes from easy to maximum effort; ideally use eight different climbs, but repeats are allowed. Circuits are a less ideal alternative when routes are too easy or training boulder link-ups."}, {"kind": "progression", "text": "Start with the easiest route; increase 1–3 grades for each subsequent climb until maximum effort, then decrease 1–3 grades after the hardest attempt. The hardest attempt should finish at max effort or end in a near-top fall."}],
+            "steps": [{"type": "action", "label": "Route pyramid climb", "sets": 8, "reps": 1, "rest_seconds": 600, "instruction": "Follow the increasing-then-decreasing grade sequence; source says to reference the hardest climb completed when logging."}],
+            "reason": "Unready pending route-grade profile and review of maximum-effort selection."
+        },
+        {
+            "slug": "warm-up-protocol-route-climbing",
+            "title": "Warm Up Protocol - Route Climbing",
+            "category": "warmup",
+            "status": "ready",
+            "original_category": "Power Endurance",
+            "original_subcategory": "Aerobic Power",
+            "purpose": [
+                "general warmup",
+                "route preparation"
+            ],
+            "effects": [
+                {
+                    "text": "progress from cardio and mobility to easy climbing",
+                    "basis": "source"
+                }
+            ],
+            "duration": {
+                "source_minutes": 30
+            },
+            "equipment": {
+                "required_all": [
+                    "route or circuit wall"
+                ],
+                "required_any": [
+                    "theraband",
+                    "light weights"
+                ]
+            },
+            "location": {
+                "allowed": [
+                    "climbing_gym",
+                    "crag"
+                ]
+            },
+            "eligibility": {},
+            "restrictions": [],
+            "steps": [
+                {
+                    "type": "sequence",
+                    "label": "Route warm-up",
+                    "children": [
+                        {
+                            "type": "action",
+                            "label": "Cardio warm-up",
+                            "seconds": 300,
+                            "instruction": "Start easy and finish breathing heavily."
+                        },
+                        {
+                            "type": "action",
+                            "label": "Arm swings",
+                            "seconds": 60,
+                            "instruction": "15 controlled circles forward and 15 backward."
+                        },
+                        {
+                            "type": "action",
+                            "label": "Single-leg RDL",
+                            "sets": 2,
+                            "reps": 10,
+                            "instruction": "No weights."
+                        },
+                        {
+                            "type": "action",
+                            "label": "Side lunges",
+                            "sets": 1,
+                            "reps": 10
+                        },
+                        {
+                            "type": "action",
+                            "label": "Standing IYT",
+                            "sets": 1,
+                            "reps": 10,
+                            "instruction": "Use a theraband or light weights."
+                        },
+                        {
+                            "type": "action",
+                            "label": "Plank twists",
+                            "sets": 1,
+                            "reps": 10
+                        },
+                        {
+                            "type": "action",
+                            "label": "Easy route climbing",
+                            "instruction": "Build intensity slowly."
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "slug": "h-core-b",
+            "title": "H-Core - B",
+            "category": "conditioning",
+            "status": "ready",
+            "original_category": "Conditioning",
+            "original_subcategory": "Core",
+            "purpose": [
+                "core strength"
+            ],
+            "effects": [
+                {
+                    "text": "harder core workout that can use bodyweight or added weight",
+                    "basis": "source"
+                }
+            ],
+            "duration": {
+                "source_minutes": 25
+            },
+            "equipment": {
+                "required_all": [
+                    "exercise mat"
+                ],
+                "required_any": [],
+                "optional_any": [
+                    "dumbbells",
+                    "kettlebell"
+                ]
+            },
+            "location": {
+                "allowed": [
+                    "home",
+                    "gym",
+                    "climbing_gym"
+                ]
+            },
+            "eligibility": {},
+            "restrictions": [],
+            "steps": [
+                {
+                    "type": "sequence",
+                    "label": "Complete exercises in order",
+                    "children": [
+                        {
+                            "type": "action",
+                            "label": "Weighted upper-ab crunches",
+                            "sets": 4,
+                            "reps": 10,
+                            "rest_seconds": 60
+                        },
+                        {
+                            "type": "action",
+                            "label": "Back arches",
+                            "sets": 4,
+                            "reps": 20,
+                            "rest_seconds": 60
+                        },
+                        {
+                            "type": "action",
+                            "label": "Kettlebell twist crunches",
+                            "sets": 4,
+                            "reps": 30,
+                            "rest_seconds": 60
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "slug": "floor-core-b",
+            "title": "Floor Core - B",
+            "category": "conditioning",
+            "status": "ready",
+            "original_category": "Conditioning",
+            "original_subcategory": "Core",
+            "purpose": [
+                "core strength"
+            ],
+            "effects": [
+                {
+                    "text": "simple core work requiring floor space",
+                    "basis": "source"
+                }
+            ],
+            "duration": {
+                "source_minutes": 20
+            },
+            "equipment": {
+                "required_all": [
+                    "exercise mat"
+                ],
+                "required_any": []
+            },
+            "location": {
+                "allowed": [
+                    "home",
+                    "gym",
+                    "climbing_gym"
+                ]
+            },
+            "eligibility": {},
+            "restrictions": [],
+            "steps": [
+                {
+                    "type": "sequence",
+                    "label": "Complete all sets of one exercise before next",
+                    "children": [
+                        {
+                            "type": "action",
+                            "label": "Twisting crunch",
+                            "sets": 3,
+                            "reps": 15,
+                            "rest_seconds": 60
+                        },
+                        {
+                            "type": "action",
+                            "label": "Dish tuck",
+                            "sets": 3,
+                            "reps": 15,
+                            "rest_seconds": 60
+                        },
+                        {
+                            "type": "action",
+                            "label": "Superman",
+                            "sets": 3,
+                            "reps": 15,
+                            "rest_seconds": 60
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "slug": "extended-core-b",
+            "title": "Extended Core - B",
+            "category": "conditioning",
+            "status": "ready",
+            "original_category": "Conditioning",
+            "original_subcategory": "Core",
+            "purpose": [
+                "body tension"
+            ],
+            "effects": [
+                {
+                    "text": "develop body tension in extended positions",
+                    "basis": "source"
+                }
+            ],
+            "duration": {
+                "source_minutes": 25
+            },
+            "equipment": {
+                "required_all": [
+                    "exercise mat"
+                ],
+                "required_any": [
+                    "pull-up bar",
+                    "gymnastic rings"
+                ],
+                "source_icons": [
+                    "pull-up bar",
+                    "gymnastic rings",
+                    "exercise mat"
+                ]
+            },
+            "location": {
+                "allowed": [
+                    "home",
+                    "gym",
+                    "climbing_gym"
+                ]
+            },
+            "eligibility": {},
+            "restrictions": [],
+            "steps": [
+                {
+                    "type": "sequence",
+                    "label": "Finish every set of an exercise before moving on",
+                    "children": [
+                        {
+                            "type": "action",
+                            "label": "Hanging leg raises",
+                            "sets": 3,
+                            "reps": 10,
+                            "rest_seconds": 120
+                        },
+                        {
+                            "type": "action",
+                            "label": "Jack knives",
+                            "sets": 3,
+                            "reps": 10,
+                            "rest_seconds": 120
+                        },
+                        {
+                            "type": "action",
+                            "label": "Dish tuck",
+                            "sets": 3,
+                            "reps": 10,
+                            "rest_seconds": 120
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "slug": "bar-core-a",
+            "title": "Bar Core - A",
+            "category": "conditioning",
+            "status": "ready",
+            "original_category": "Conditioning",
+            "original_subcategory": "Core",
+            "purpose": [
+                "hanging core strength"
+            ],
+            "effects": [
+                {
+                    "text": "challenging core workout using a pull-up bar",
+                    "basis": "source"
+                }
+            ],
+            "duration": {
+                "source_minutes": 20
+            },
+            "equipment": {
+                "required_all": [
+                    "pull-up bar"
+                ],
+                "required_any": []
+            },
+            "location": {
+                "allowed": [
+                    "home",
+                    "gym",
+                    "climbing_gym"
+                ]
+            },
+            "eligibility": {},
+            "restrictions": [],
+            "steps": [
+                {
+                    "type": "sequence",
+                    "label": "Complete exercises in order",
+                    "children": [
+                        {
+                            "type": "action",
+                            "label": "Hanging knee raises",
+                            "sets": 3,
+                            "reps": 10,
+                            "rest_seconds": 180
+                        },
+                        {
+                            "type": "action",
+                            "label": "Bent-leg window wipers",
+                            "sets": 3,
+                            "reps": 10,
+                            "rest_seconds": 180
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "slug": "6-minute-core",
+            "title": "6 Minute Core",
+            "category": "conditioning",
+            "status": "ready",
+            "original_category": "Conditioning",
+            "original_subcategory": "Core",
+            "purpose": [
+                "core conditioning"
+            ],
+            "effects": [
+                {
+                    "text": "six movements alternating 30 seconds of work and rest",
+                    "basis": "source"
+                }
+            ],
+            "duration": {
+                "source_minutes": 10,
+                "assumption": "six minutes of timed work/rest plus setup"
+            },
+            "equipment": {
+                "required_all": [
+                    "exercise mat"
+                ],
+                "required_any": [],
+                "optional_any": [
+                    "dumbbell",
+                    "kettlebell"
+                ]
+            },
+            "location": {
+                "allowed": [
+                    "home",
+                    "gym",
+                    "climbing_gym"
+                ]
+            },
+            "eligibility": {},
+            "restrictions": [
+                {
+                    "kind": "safety",
+                    "text": "Stop immediately if these movements cause back pain."
+                }
+            ],
+            "steps": [
+                {
+                    "type": "sequence",
+                    "label": "Thirty seconds work then thirty seconds rest for each",
+                    "children": [
+                        {
+                            "type": "action",
+                            "label": "Dish tuck",
+                            "seconds": 30,
+                            "rest_seconds": 30
+                        },
+                        {
+                            "type": "action",
+                            "label": "Weighted twist",
+                            "seconds": 30,
+                            "rest_seconds": 30
+                        },
+                        {
+                            "type": "action",
+                            "label": "Weighted sit-up",
+                            "seconds": 30,
+                            "rest_seconds": 30
+                        },
+                        {
+                            "type": "action",
+                            "label": "Marching plank",
+                            "seconds": 30,
+                            "rest_seconds": 30
+                        },
+                        {
+                            "type": "action",
+                            "label": "Dish paddles",
+                            "seconds": 30,
+                            "rest_seconds": 30
+                        },
+                        {
+                            "type": "action",
+                            "label": "Back arches",
+                            "seconds": 30,
+                            "rest_seconds": 30
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "slug": "scapular-conditioning",
+            "title": "Scapular Conditioning",
+            "category": "conditioning",
+            "status": "draft",
+            "original_category": "Conditioning",
+            "original_subcategory": "Antagonist & Lower Body",
+            "source_completeness":"complete","purpose":["shoulder girdle conditioning"],"effects":[{"text":"rows, presses, pull-ups and Y raises","basis":"source"}],"duration":{"source_minutes":40},"equipment":{"required_all":["dumbbell","pull-up bar"],"required_any":[]},"eligibility":{},"restrictions":[],"steps":[{"type":"sequence","children":[{"type":"action","label":"Isometric dumbbell row","sets":3,"reps":2,"seconds":20,"rest_seconds":10},{"type":"action","label":"One-arm dumbbell shoulder press","sets":2,"reps":5,"rest_seconds":180},{"type":"action","label":"Wide-grip pull-up","sets":3,"reps":5,"rest_seconds":180},{"type":"action","label":"Standing Y","sets":3,"reps":10,"rest_seconds":120}]}],"reason":"Unready pending movement-technique review."
+        },
+        {
+            "slug": "forearm-conditioning",
+            "title": "Forearm Conditioning",
+            "category": "conditioning",
+            "status": "ready",
+            "original_category": "Conditioning",
+            "original_subcategory": "Antagonist & Lower Body",
+            "purpose": [
+                "forearm conditioning"
+            ],
+            "effects": [
+                {
+                    "text": "train wrist flexor and extensor curls separately",
+                    "basis": "source"
+                }
+            ],
+            "duration": {
+                "source_minutes": 10
+            },
+            "equipment": {
+                "required_all": [
+                    "dumbbell"
+                ],
+                "required_any": [
+                    "chair",
+                    "bench"
+                ]
+            },
+            "location": {
+                "allowed": [
+                    "home",
+                    "gym",
+                    "climbing_gym"
+                ]
+            },
+            "eligibility": {},
+            "restrictions": [
+                {
+                    "kind": "form",
+                    "text": "Keep forearm supported on thigh; extensor curl uses a smaller load than flexor curl."
+                }
+            ],
+            "steps": [
+                {
+                    "type": "sequence",
+                    "label": "Both arms for each exercise",
+                    "children": [
+                        {
+                            "type": "action",
+                            "label": "Flexor curl",
+                            "sets": 3,
+                            "reps": 10,
+                            "rest_seconds": 60
+                        },
+                        {
+                            "type": "action",
+                            "label": "Extensor curl",
+                            "sets": 3,
+                            "reps": 10,
+                            "rest_seconds": 60
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "slug": "deadlift-b",
+            "title": "Deadlift - B",
+            "category": "conditioning",
+            "status": "draft",
+            "original_category": "Conditioning",
+            "original_subcategory": "Antagonist & Lower Body",
+            "source_completeness":"complete","purpose":["strength and resilience"],"effects":[{"text":"moderately high intensity deadlift work","basis":"source"}],"duration":{"source_minutes":10},"equipment":{"required_all":["barbell"],"required_any":[]},"eligibility":{},"restrictions":[{"kind":"intensity","text":"7/10 RPE leaves about three reps in reserve."}],"steps":[{"type":"repeat","sets":3,"reps":5,"rest_seconds":150,"children":[{"type":"action","label":"Deadlift"}]}],"reason":"Unready pending lifting-technique and RPE suitability review."
+        },
+        {
+            "slug": "wrist-curl-hypertrophy",
+            "title": "Wrist Curl Hypertrophy",
+            "category": "conditioning",
+            "status": "draft",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Finger Strength",
+            "source_completeness":"complete","purpose":["forearm flexor hypertrophy"],"effects":[{"text":"alternating heavy wrist curls","basis":"source"}],"duration":{"source_minutes":5},"equipment":{"required_all":["chair or bench"],"required_any":["dumbbell","loaded bag with broom handle"]},"eligibility":{},"restrictions":[{"kind":"sequence","text":"After climbing/fingerboarding or separate session."}],"steps":[{"type":"side","sets":5,"seconds":30,"rest_seconds":5,"sides":["left","right"],"children":[{"type":"action","label":"Flexor wrist curls","instruction":"Aim for ten repetitions."}]}],"reason":"Unready pending load and tendon-tolerance review."
+        },
+        {
+            "slug": "varied-grips-b",
+            "title": "Varied Grips - B",
+            "category": "conditioning",
+            "status": "needs_review",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Finger Strength",
+            "source_completeness": "partial",
+            "purpose": [],
+            "effects": [{"text": "source supplies grip assignments for sets 1–10", "basis": "source"}],
+            "duration": {},
+            "equipment": {"required_all": [], "required_any": ["pulley", "foothold", "theraband"]},
+            "eligibility": {},
+            "restrictions": [{"kind": "adaptation", "text": "Visible source fragment says intensity can be reduced with pulley, foothold, theraband, or a larger hold."}],
+            "steps": [{"type": "sequence", "label": "Visible grip assignments only", "children": [
+                {"type": "action", "label": "4-finger half crimp or open hand", "sets": 3},
+                {"type": "action", "label": "Front 3 half crimp", "sets": 2},
+                {"type": "action", "label": "Back 3 half crimp", "sets": 2},
+                {"type": "action", "label": "Front 3 open drag", "sets": 3}
+            ]}],
+            "reason": "Only a trailing portion of the card is available; timing, repetitions, equipment requirements, and protocol instructions are unresolved."
+        },
+        {
+            "slug": "small-edges-12mm-a",
+            "title": "Small Edges - 12mm - A",
+            "category": "conditioning",
+            "status": "needs_review",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Finger Strength",
+            "source_completeness": "partial",
+            "purpose": ["finger strength", "becoming accustomed to a smaller hold size"],
+            "effects": [{"text": "perform 12 mm edge hangs at perceived 7/10 effort", "basis": "source"}],
+            "duration": {"work_seconds": 42, "rest_seconds_between_sets": 120},
+            "equipment": {"required_all": ["12 mm edge"], "required_any": ["fingerboard", "hangboard"]},
+            "eligibility": {"experience": "source says climbers should have substantial training experience"},
+            "restrictions": [
+                {"kind": "safety", "text": "Source says small-edge work stresses finger soft tissues/joints and can be skin intensive; it should follow a period of max-hang work on a larger edge."},
+                {"kind": "intensity", "text": "Use a skin-friendly approximately 12 mm edge and an RPE of 7/10; load may vary slightly between sessions because it is perceived effort."}
+            ],
+            "steps": [{"type": "action", "label": "Dead hang: 12 mm edge", "sets": 6, "reps": 1, "seconds": 7, "rest_seconds": 120, "instruction": "7/10 RPE."}],
+            "reason": "The source card is truncated after its warm-up instruction; retain the visible prescription but do not publish it."
+        },
+        {
+            "slug": "pinch-strength-test",
+            "title": "Pinch Strength Test",
+            "category": "assessment",
+            "status": "draft",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Finger Strength",
+            "source_completeness": "complete",
+            "purpose": ["assess single-arm pinch strength"],
+            "effects": [{"text": "establish an external pinch-block load baseline", "basis": "source"}],
+            "load_basis": {"kind": "external_lifted_load", "excludes": ["body mass"]},
+            "duration": {"sets_maximum": 8, "hang_seconds": 7, "rest_seconds_between_arms": 30, "rest_seconds_between_sets": 120},
+            "equipment": {"required_all": ["pinch block", "timer"], "required_any": []},
+            "eligibility": {},
+            "restrictions": [{"kind": "safety", "text": "Test after at least 24 hours away from other training, with a thorough warm-up. Practise the lifting plane on a larger hold or sling/strap with submaximal loads; keep back straight and torso upright."}, {"kind": "form", "text": "Use one arm, consistent pinch grip, engaged shoulder, and a straight arm at 170–180 degrees."}, {"kind": "load", "text": "Increase load progressively by no more than 5 kg per set (typically 1–2 kg); if no maximum within eight sets, finish and test another day."}, {"kind": "safety", "text": "Stop immediately if pinch grip, arm, or torso position cannot be maintained or fingers open; source advises professional coaching if unsure."}],
+            "steps": [{"type": "repeat", "sets": 8, "rest_seconds": 120, "children": [{"type": "side", "label": "Single-arm pinch-block hang", "reps": 1, "seconds": 7, "rest_seconds": 30, "sides": ["left", "right"], "instruction": "Progressively increase external lifted load. Record the highest load completed for strict seven-second hold on each side."}]}],
+            "reason": "Unready pending safe assessment workflow and separate side-specific result recording."
+        },
+        {
+            "slug": "pinch-block-max-80",
+            "title": "Pinch Block Max 80%",
+            "category": "conditioning",
+            "status": "needs_review",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Finger Strength",
+            "load_basis": {
+                "kind": "percent_of_external_lifted_load",
+                "percent": 80,
+                "test": "matching pinch-strength assessment",
+                "excludes": ["body mass"],
+                "requires": ["same pinch shape and size"]
+            },
+            "source_completeness": "partial",
+            "purpose": ["forearm and finger strength in a pinch grip"],
+            "effects": [{"text": "perform submaximal pinch hangs using the matching pinch-block test", "basis": "source"}],
+            "duration": {"work_seconds_per_side": 120, "rest_seconds_between_reps": 30, "rest_seconds_between_sets": 90},
+            "equipment": {"required_all": ["matching pinch block"], "required_any": []},
+            "eligibility": {"required_profile": ["matching pinch strength assessment"]},
+            "restrictions": [{"kind": "safety", "text": "Pick up potentially heavy weights only with a familiar body position and plane of movement; practise with submaximal loads, and keep back straight and torso upright."}, {"kind": "load", "text": "Use the same pinch shape and size as testing. Reduce weight if a full 10-second hang cannot be completed."}, {"kind": "safety", "text": "Stop immediately if fingers or thumb start to open; change intensity before further repetitions."}, {"kind": "retest", "text": "Retest every 4–8 weeks to establish new loadings."}],
+            "steps": [{"type": "repeat", "sets": 6, "rest_seconds": 90, "children": [{"type": "side", "label": "Pinch-block hang", "reps": 1, "seconds": 10, "rest_seconds": 30, "sides": ["left", "right"], "instruction": "Use 80% of the matching seven-second pinch assessment's external lifted load."}]}],
+            "reason": "Requires a matching pinch test; percentage applies to external lifted load, not bodyweight."
+        },
+        {
+            "slug": "open-grip-test",
+            "title": "Open Grip Test",
+            "category": "assessment",
+            "status": "draft",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Finger Strength",
+            "source_completeness": "complete",
+            "purpose": ["assess two-arm open-grip finger strength"],
+            "effects": [{"text": "establish seven-second maximal total-load baseline", "basis": "source"}],
+            "load_basis": {"kind": "total_load", "formula": "body mass plus additional weight", "requires": ["20 mm edge", "four-finger open grip"]},
+            "duration": {"sets_maximum": 8, "hang_seconds": 7, "rest_seconds_between_sets": 120},
+            "equipment": {"required_all": ["20 mm edge", "timer"], "required_any": ["fingerboard", "hangboard"]},
+            "eligibility": {},
+            "restrictions": [{"kind": "form", "text": "Hang with two arms and all four fingers on the hold in open grip (not a three-finger drag); arms may be straight or slightly bent, but do not lock off at 90 degrees."}, {"kind": "safety", "text": "Test after at least 24 hours of rest and a thorough hold/grip-specific warm-up. Keep grip position unchanged; stop and put feet down if fingers move or open."}, {"kind": "load", "text": "Increase loading slowly by no more than 5 kg; if bodyweight cannot complete the test, use a pulley/counterweight. If no maximum within eight sets, finish and test another day."}],
+            "steps": [{"type": "action", "label": "Two-arm open-grip dead hang: 20 mm edge", "sets": 8, "reps": 1, "seconds": 7, "rest_seconds": 120, "instruction": "Progressively increase total load to failure; record the highest strict seven-second total load and bodyweight percentage."}],
+            "reason": "Unready pending safe maximal-assessment review and user-specific load baseline."
+        },
+        {
+            "slug": "no-hang-edge-pick-ups-b",
+            "title": "No Hang Edge Pick-ups - B",
+            "category": "conditioning",
+            "status": "draft",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Finger Strength",
+            "source_completeness": "complete",
+            "purpose": ["finger strength with an edge pick-up device"],
+            "effects": [{"text": "train finger loading outside a hanging position", "basis": "source"}],
+            "duration": {"work_seconds": 120, "rest_seconds_between_reps": 60, "rest_seconds_between_sets": 60},
+            "equipment": {"required_all": ["edge pick-up device", "20 mm edge"], "required_any": []},
+            "eligibility": {},
+            "restrictions": [{"kind": "intensity", "text": "Use the grip of interest (four-finger half crimp for general strength) at 8/10 RPE; do not make every lift maximal. Warm up progressively, beginning on larger edges if useful."}],
+            "steps": [{"type": "action", "label": "20 mm edge pick-up", "sets": 6, "reps": 2, "seconds": 10, "rest_seconds": 60, "instruction": "8/10 RPE; weight can be added to the device to increase intensity."}],
+            "reason": "Unready pending review of individual load tolerance and edge pick-up setup."
+        },
+        {
+            "slug": "front-3-open-drag-test",
+            "title": "Front 3 Open Drag Test",
+            "category": "assessment",
+            "status": "needs_review",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Finger Strength",
+            "source_completeness": "conflicting",
+            "purpose": ["assess two-arm front-three finger strength"],
+            "effects": [{"text": "establish seven-second maximal total-load baseline", "basis": "source"}],
+            "load_basis": {"kind": "total_load", "formula": "body mass plus additional weight", "requires": ["front-three grip"]},
+            "duration": {"sets_maximum": 8, "hang_seconds": 7, "rest_seconds_between_sets": 120},
+            "equipment": {"required_all": ["timer"], "required_any": ["fingerboard", "hangboard", "edge"]},
+            "eligibility": {},
+            "restrictions": [{"kind": "form", "text": "Source introduction specifies a two-arm front-three open drag/open crimp, while its rules specify strict half crimp; arms may be straight or slightly bent."}, {"kind": "safety", "text": "Test after 24 hours of rest and a thorough grip-specific warm-up. Stop and put feet down if fingers move or open; increase loading by no more than 5 kg and stop if no maximum within eight sets."}],
+            "steps": [{"type": "action", "label": "Two-arm front-three dead hang", "sets": 8, "reps": 1, "seconds": 7, "rest_seconds": 120, "instruction": "Progressively increase total load to failure; the source does not resolve whether this is open drag/open crimp or half crimp."}],
+            "reason": "Source title and introduction say front-three open drag/open crimp while rules mention half crimp; do not select a grip automatically."
+        },
+        {
+            "slug": "finger-strength-test-one-arm",
+            "title": "Finger Strength Test - One Arm",
+            "category": "assessment",
+            "status": "needs_review",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Finger Strength",
+            "source_completeness": "partial",
+            "purpose": ["assess single-arm finger strength"],
+            "effects": [{"text": "progressively test a ten-second one-arm dead hang", "basis": "source"}],
+            "duration": {"sets_maximum": 8, "hang_seconds": 10, "rest_seconds_between_arms": 30, "rest_seconds_between_sets": 120},
+            "equipment": {"required_all": ["timer"], "required_any": ["fingerboard", "hangboard", "edge"]},
+            "eligibility": {},
+            "restrictions": [{"kind": "safety", "text": "Test after at least 24 hours away from other climbing/training and with a thorough hold, grip, and body-position-specific warm-up."}, {"kind": "form", "text": "Use one arm, strict half crimp or four-finger open grip, and elbow angle 90–180 degrees; the supplied card cuts off after the shoulder-engagement rule."}],
+            "steps": [{"type": "repeat", "sets": 8, "rest_seconds": 120, "children": [{"type": "side", "label": "One-arm dead hang", "reps": 1, "seconds": 10, "rest_seconds": 30, "sides": ["left", "right"], "instruction": "Progressively increase load to a maximal score; remaining source rules are not visible."}]}],
+            "reason": "The supplied one-arm card is cut off and its ten-second result must not be treated as the five-second max-hang baseline."
+        },
+        {
+            "slug": "finger-curl-hypertrophy",
+            "title": "Finger Curl Hypertrophy",
+            "category": "conditioning",
+            "status": "draft",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Finger Strength",
+            "source_completeness":"complete","purpose":["finger and forearm hypertrophy"],"effects":[{"text":"heavy finger curls without hanging","basis":"source"}],"duration":{"source_minutes":10},"equipment":{"required_all":[],"required_any":["dumbbell","loaded bag with broom handle","rolling pin"]},"eligibility":{},"restrictions":[],"steps":[{"type":"side","sets":4,"seconds":30,"rest_seconds":30,"sides":["left","right"],"children":[{"type":"action","label":"Heavy finger curls","instruction":"Aim for ten repetitions."}]}],"reason":"Unready pending load/tendon-tolerance review."
+        },
+        {
+            "slug": "edge-lift-test",
+            "title": "Edge Lift Test",
+            "category": "assessment",
+            "status": "draft",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Finger Strength",
+            "source_completeness": "complete",
+            "purpose": ["assess single-arm edge-lifting finger strength"],
+            "effects": [{"text": "establish maximal external load lifted from a 20 mm edge", "basis": "source"}],
+            "load_basis": {"kind": "external_lifted_load", "excludes": ["body mass"]},
+            "duration": {"sets_maximum": 8, "lift_seconds": 7, "rest_seconds_between_arms": 30, "rest_seconds_between_sets": 120},
+            "equipment": {"required_all": ["edge pick-up device", "20 mm edge", "timer"], "required_any": []},
+            "eligibility": {},
+            "restrictions": [{"kind": "safety", "text": "Test after at least 24 hours from other climbing/training and a thorough warm-up. Do not change grip; stop if fingers move or open."}, {"kind": "load", "text": "Increase load progressively by no more than 5 kg per set (typically 1–2 kg); if no maximum within eight sets, finish and test another day."}, {"kind": "form", "text": "Use strict half crimp for all seven seconds; inability to maintain it is a failed lift."}],
+            "steps": [{"type": "repeat", "sets": 8, "rest_seconds": 120, "children": [{"type": "side", "label": "Single-arm 20 mm edge lift", "reps": 1, "seconds": 7, "rest_seconds": 30, "sides": ["left", "right"], "instruction": "Progressively increase external lifted load; record the highest strict lift on each side."}]}],
+            "reason": "Unready pending safe maximal-assessment review and side-specific result workflow."
+        },
+        {
+            "slug": "bodyweight-repeaters-c",
+            "title": "Bodyweight Repeaters - C",
+            "category": "conditioning",
+            "status": "draft",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Finger Strength",
+            "source_completeness": "complete",
+            "purpose": ["prepare beginner to intermediate fingers for higher-intensity work"],
+            "effects": [{"text": "bodyweight half-crimp repeaters", "basis": "source"}],
+            "duration": {"full_session_sets": 6, "half_session_sets": 3, "work_seconds_per_set": 21, "rest_seconds_between_sets": 60},
+            "equipment": {"required_all": ["20 mm edge", "interval timer"], "required_any": ["fingerboard", "hangboard"]},
+            "eligibility": {},
+            "restrictions": [{"kind": "form", "text": "Use bodyweight only and half crimp. Aim for straight arms with shoulders engaged; if that causes shoulder discomfort, use a 90–150-degree elbow angle."}],
+            "steps": [{"type": "repeat", "sets": 6, "rest_seconds": 60, "children": [{"type": "action", "label": "Bodyweight half-crimp dead hang: 20 mm edge", "reps": 3, "seconds": 7, "rest_seconds": 3}]}],
+            "reason": "Unready pending individual shoulder and finger-tolerance review."
+        },
+        {
+            "slug": "warm-up-protocol-bouldering",
+            "title": "Warm Up Protocol - Bouldering",
+            "category": "warmup",
+            "status": "ready",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Bouldering",
+            "purpose": [
+                "general warmup",
+                "bouldering preparation"
+            ],
+            "effects": [
+                {
+                    "text": "progress through cardio, mobility, easy climbing, grip recruitment and harder climbing",
+                    "basis": "source"
+                }
+            ],
+            "duration": {
+                "source_minutes": 25
+            },
+            "equipment": {
+                "required_all": [
+                    "bouldering wall"
+                ],
+                "required_any": []
+            },
+            "location": {
+                "allowed": [
+                    "climbing_gym",
+                    "crag"
+                ]
+            },
+            "eligibility": {},
+            "restrictions": [],
+            "steps": [
+                {
+                    "type": "sequence",
+                    "label": "Five-stage bouldering warm-up",
+                    "children": [
+                        {
+                            "type": "action",
+                            "label": "Cardiovascular warm-up",
+                            "seconds": 300,
+                            "instruction": "Choose a cardio exercise."
+                        },
+                        {
+                            "type": "action",
+                            "label": "Mobility",
+                            "instruction": "Arm swings, single-leg RDL, side lunges, IYT and plank twists."
+                        },
+                        {
+                            "type": "action",
+                            "label": "Easy climbing",
+                            "seconds": 300,
+                            "instruction": "Low-intensity traversing, easy bouldering or very easy routes."
+                        },
+                        {
+                            "type": "action",
+                            "label": "Specific grip warm-up",
+                            "reps": 9,
+                            "seconds": 10,
+                            "rest_seconds": 50,
+                            "instruction": "Use varied grip positions at low intensity."
+                        },
+                        {
+                            "type": "action",
+                            "label": "Harder climbing",
+                            "instruction": "Use a few harder moves or problems to prepare for the session."
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "slug": "style-triad",
+            "title": "Style Triad",
+            "category": "climbing",
+            "status": "draft",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Bouldering",
+            "source_completeness":"complete", "purpose":["limit bouldering power"], "effects":[{"text":"make tactical attempts on three maximal problems","basis":"source"}], "duration":{"source_minutes":65}, "equipment":{"required_all":["bouldering wall"],"required_any":[]}, "eligibility":{}, "restrictions":[{"kind":"intensity","text":"High failure rate is expected; all completions indicates low intensity."}], "steps":[{"type":"repeat","sets":3,"rest_seconds":300,"children":[{"type":"repeat","reps":5,"rest_seconds":180,"children":[{"type":"action","label":"Limit boulder attempt"}]}]}], "reason":"Unready pending risk/grade screening."
+        },
+        {
+            "slug": "strength-intervals",
+            "title": "Strength Intervals",
+            "category": "climbing",
+            "status": "draft",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Bouldering",
+            "source_completeness": "complete",
+            "purpose": ["bouldering strength and power"],
+            "effects": [{"text": "repeat challenging prepared boulders with full recovery", "basis": "source"}],
+            "duration": {"source_minutes": 65},
+            "equipment": {"required_all": ["bouldering wall"], "required_any": []},
+            "location": {"allowed": ["climbing_gym"]},
+            "eligibility": {"required_profile": ["max_grade"]},
+            "restrictions": [{"kind": "intensity", "text": "Use six vertical-to-steep boulders one to two grades below max, pre-practised before the session."}],
+            "steps": [{"type": "repeat", "sets": 6, "rest_seconds": 180, "children": [{"type": "repeat", "reps": 3, "rest_seconds": 180, "children": [{"type": "action", "label": "Challenging boulder"}]}]}],
+            "reason": "Unready pending explicit max-grade profile and safety review."
+        },
+        {
+            "slug": "pyramids",
+            "title": "Pyramids",
+            "category": "climbing",
+            "status": "needs_review",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Bouldering",
+            "source_completeness": "complete",
+            "purpose": ["boulder strength and power"],
+            "effects": [{"text": "climb an eight-problem difficulty pyramid and reverse it", "basis": "source"}],
+            "duration": {"sets": 15, "rest_seconds_between_attempts": 180, "rest_seconds_between_problems": 180},
+            "equipment": {"required_all": ["bouldering wall"], "required_any": []},
+            "eligibility": {},
+            "restrictions": [{"kind": "selection", "text": "Choose and test eight vertical-to-steep problems from hard to maximum effort before starting; order by difficulty, which may reflect weakness rather than grade."}, {"kind": "attempt_cap", "text": "Attempt each problem no more than three times. Failure on the two hardest problems is acceptable because they should be maximum effort."}],
+            "steps": [{"type": "sequence", "label": "Ascending then descending boulder pyramid", "children": [{"type": "action", "label": "Climb ordered boulder", "sets": 8, "rest_seconds": 180, "instruction": "Start easiest and progress to hardest; each problem is one set and receives up to three attempts with 3-minute rests."}, {"type": "action", "label": "Re-climb ordered boulder", "sets": 7, "rest_seconds": 180, "instruction": "After the hardest problem, repeat problems in reverse order, omitting the hardest duplicate, for 15 total sets."}]}],
+            "reason": "Unready pending review of individualized maximum-effort problem selection and attempt-cap handling."
+        },
+        {
+            "slug": "competition-boulder-sets",
+            "title": "Competition Boulder Sets",
+            "category": "climbing",
+            "status": "draft",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Bouldering",
+            "source_completeness":"complete","purpose":["competition-style bouldering"],"effects":[{"text":"high-quality attempts in fixed work blocks","basis":"source"}],"duration":{"source_minutes":40},"equipment":{"required_all":["bouldering wall"],"required_any":[]},"eligibility":{},"restrictions":[{"kind":"intensity","text":"80–110% maximum; 30–50% success acceptable."}],"steps":[{"type":"repeat","sets":6,"rest_seconds":240,"children":[{"type":"action","label":"Competition boulder work block","seconds":240,"instruction":"Rest as needed; repeat once if flashed."}]}],"reason":"Unready pending competition-intensity suitability review."
+        },
+        {
+            "slug": "circuit-boulder-repeats",
+            "title": "Circuit Boulder Repeats",
+            "category": "climbing",
+            "status": "draft",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Bouldering",
+            "source_completeness":"complete","purpose":["sustained boulder power endurance"],"effects":[{"text":"repeat created 30-second boulder circuits","basis":"source"}],"duration":{"source_minutes":40},"equipment":{"required_all":["bouldering wall"],"required_any":[]},"eligibility":{"required_profile":["max_grade"]},"restrictions":[],"steps":[{"type":"repeat","sets":4,"rest_seconds":120,"children":[{"type":"repeat","reps":4,"rest_seconds":120,"children":[{"type":"action","label":"Thirty-second created boulder"}]}]}],"reason":"Unready pending safe sustained circuit selection."
+        },
+        {
+            "slug": "board-10",
+            "title": "Board 10",
+            "category": "climbing",
+            "status": "draft",
+            "original_category": "Strength & Power",
+            "original_subcategory": "Bouldering",
+            "source_completeness": "complete",
+            "purpose": ["training-board strength"],
+            "effects": [{"text": "combine five moderate warm-up problems with five near-max problems", "basis": "source"}],
+            "duration": {"source_minutes": 40},
+            "equipment": {"required_all": ["training board"], "required_any": []},
+            "location": {"allowed": ["climbing_gym"]},
+            "eligibility": {"required_profile": ["flash_grade", "max_grade"]},
+            "restrictions": [{"kind": "attempt_cap", "text": "Use at most two attempts on each of the first five and four on each of the last five."}],
+            "steps": [{"type": "sequence", "children": [{"type": "repeat", "reps": 5, "rest_seconds": 180, "children": [{"type": "action", "label": "Practised flash-grade board problem", "instruction": "Maximum two attempts."}]}, {"type": "repeat", "reps": 5, "rest_seconds": 180, "children": [{"type": "action", "label": "Near-max board problem", "instruction": "Maximum four attempts."}]}]}],
+            "reason": "Unready pending explicit grades and board-specific safety review."
+        },
+        {
+            "slug": "power-endurance-test-60",
+            "title": "Power Endurance Test - 60%",
+            "category": "assessment",
+            "status": "needs_review",
+            "original_category": "Power Endurance",
+            "original_subcategory": "Anaerobic Capacity",
+            "source_completeness": "partial",
+            "purpose": ["assess repeat-hang power endurance at 60 percent load"],
+            "effects": [{"text": "record time to repeat-hang failure at a fixed total-load percentage", "basis": "source"}],
+            "load_basis": {"kind": "percent_of_total_load", "percent": 60, "test": "Finger Strength Assessment Test", "formula": "(body mass plus maximum added weight) × 0.6"},
+            "duration": {"work_seconds": 7, "rest_seconds": 3, "endpoint": "total failure"},
+            "equipment": {"required_all": ["20 mm edge", "timer"], "required_any": ["fingerboard", "hangboard", "pulley system", "climbing harness"]},
+            "eligibility": {"required_profile": ["Finger Strength Assessment Test"]},
+            "restrictions": [{"kind": "form", "text": "Do not lock off; use the same 150–180-degree elbow position. Failure is inability to complete a seven-second hang or a finger-position change during a hang."}, {"kind": "recording", "text": "Record total time and the external weight change added to or removed from the body; do not record body mass as the weight change."}],
+            "steps": [{"type": "repeat", "label": "Continuous 7:3 repeaters", "seconds": 7, "rest_seconds": 3, "children": [{"type": "action", "label": "Dead hang: 20 mm edge", "instruction": "Use 60% matching total load and continue until failure; record total elapsed time."}]}],
+            "reason": "Full title is inferred from a list screen; verify title and retain as unready until the matching baseline is available."
+        },
+        {
+            "slug": "linked-boulders",
+            "title": "Linked Boulders",
+            "category": "climbing",
+            "status": "ready",
+            "original_category": "Power Endurance",
+            "original_subcategory": "Anaerobic Capacity",
+            "purpose": [
+                "short power endurance"
+            ],
+            "effects": [
+                {
+                    "text": "build short power endurance for crux sequences and longer boulders",
+                    "basis": "source"
+                }
+            ],
+            "duration": {
+                "source_minutes": 45
+            },
+            "equipment": {
+                "required_all": [
+                    "bouldering wall"
+                ],
+                "required_any": []
+            },
+            "location": {
+                "allowed": [
+                    "climbing_gym",
+                    "crag"
+                ]
+            },
+            "eligibility": {
+                "required_profile": [
+                    "flash_grade"
+                ]
+            },
+            "restrictions": [
+                {
+                    "kind": "intensity",
+                    "text": "Use one to three sustained 12-move problems around flash grade; reduce difficulty if falling before halfway."
+                }
+            ],
+            "steps": [
+                {
+                    "type": "repeat",
+                    "sets": 3,
+                    "rest_seconds": 300,
+                    "instruction": "Rest between sets only.",
+                    "children": [
+                        {
+                            "type": "repeat",
+                            "reps": 4,
+                            "rest_seconds": 120,
+                            "children": [
+                                {
+                                    "type": "action",
+                                    "label": "Linked 12-move boulder"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "slug": "density-hangs-70",
+            "title": "Density Hangs - 70%",
+            "category": "conditioning",
+            "status": "draft",
+            "original_category": "Power Endurance",
+            "original_subcategory": "Anaerobic Capacity",
+            "source_completeness": "complete",
+            "purpose": ["forearm and finger strength", "source-described tendon-structure changes"],
+            "effects": [{"text": "perform sustained submaximal hangs at 70 percent total load", "basis": "source"}],
+            "load_basis": {"kind": "percent_of_total_load", "percent": 70, "test": "matching seven-second finger-strength self-assessment", "formula": "body mass plus bodyweight adjustment", "requires": ["matching 20 mm edge", "matching grip", "matching body position"]},
+            "duration": {"work_seconds": 90, "rest_seconds_between_sets": 240},
+            "equipment": {"required_all": ["20 mm edge"], "required_any": ["fingerboard", "hangboard"]},
+            "eligibility": {"required_profile": ["matching seven-second finger-strength assessment"]},
+            "restrictions": [
+                {"kind": "load", "text": "Warm up progressively for the specific hold, grip, and body position; reduce loading if a full 30-second hang cannot be completed."},
+                {"kind": "form", "text": "Use a straight or slightly bent arm position that is comfortable."},
+                {"kind": "progression", "text": "If the final set is completed without failure, reduce edge size until the next testing or benchmarking session; if it fails, keep the intensity for the next session."},
+                {"kind": "safety", "text": "Put feet on the floor immediately if fingers or arms start to open; do not continue opening."},
+                {"kind": "retest", "text": "Retest every 4–8 weeks to establish new loadings."}
+            ],
+            "steps": [{"type": "action", "label": "Dead hang: 20 mm edge", "sets": 3, "reps": 1, "seconds": 30, "rest_seconds": 240, "instruction": "Use 70% of maximal total load from the matching seven-second finger-strength self-assessment."}],
+            "reason": "Unready pending a matching current total-load assessment and review of its failure/progression instructions."
+        },
+        {
+            "slug": "broken-redpoint",
+            "title": "Broken Redpoint",
+            "category": "climbing",
+            "status": "draft",
+            "original_category": "Power Endurance",
+            "original_subcategory": "Anaerobic Capacity",
+            "source_completeness": "complete",
+            "purpose": ["power endurance on short routes", "efficiency on project-grade crux sections"],
+            "effects": [{"text": "repeat a 6–8 move project crux with one-minute recoveries", "basis": "source"}],
+            "duration": {"sets": 3, "reps_per_set": 3, "rest_seconds_between_reps": 60, "rest_seconds_between_sets": 600},
+            "equipment": {"required_all": [], "required_any": ["route wall", "circuit wall"]},
+            "eligibility": {"required_profile": ["redpoint grade"]},
+            "restrictions": [{"kind": "selection", "text": "Use a route or circuit at redpoint grade where every move can be climbed in isolation; choose its hardest 6–8 move crux sequence."}],
+            "steps": [{"type": "repeat", "sets": 3, "rest_seconds": 600, "children": [{"type": "action", "label": "Project-grade 6–8 move crux", "reps": 3, "rest_seconds": 60}]}],
+            "reason": "Unready pending redpoint-grade profile and high-intensity crux selection review."
+        },
+        {
+            "slug": "7-3s-80",
+            "title": "7:3s 80%",
+            "category": "conditioning",
+            "status": "draft",
+            "original_category": "Power Endurance",
+            "original_subcategory": "Anaerobic Capacity",
+            "load_basis":{"kind":"percent_of_total_load","percent":80,"test":"matching seven-second finger-strength assessment","formula":"body mass plus test-added load","requires":["matching 20 mm edge","matching grip"]},
+            "source_completeness":"complete","purpose":["finger power endurance"],"effects":[{"text":"high-intensity repeaters at 80 percent total load","basis":"source"}],"duration":{"source_minutes":25},"equipment":{"required_all":["20 mm edge"],"required_any":["fingerboard","hangboard"]},"eligibility":{"required_profile":["finger_strength_test"]},"restrictions":[{"kind":"intensity","text":"Later sets may approach failure."}],"steps":[{"type":"repeat","sets":6,"rest_seconds":180,"children":[{"type":"repeat","reps":5,"seconds":7,"rest_seconds":3,"children":[{"type":"action","label":"Dead hang"}]}]}],"reason":"Unready pending matching total-load test and grip/edge baseline."
+        },
+        {
+            "slug": "boulder-triples",
+            "title": "Boulder Triples",
+            "category": "climbing",
+            "status": "draft",
+            "original_category": "Power Endurance",
+            "original_subcategory": "Anaerobic Capacity",
+            "source_completeness": "complete",
+            "purpose": ["very short power endurance for short routes, crux sequences, or long boulders"],
+            "effects": [{"text": "repeat flash-grade boulders in triples", "basis": "source"}],
+            "duration": {"sets": 6, "reps_per_set": 3, "rest_seconds_between_reps": 60, "rest_seconds_between_sets": 180},
+            "equipment": {"required_all": ["bouldering wall"], "required_any": []},
+            "eligibility": {"required_profile": ["boulder flash grade"]},
+            "restrictions": [{"kind": "selection", "text": "Choose three varied-style 6–8 move boulders around flash grade; ideally complete two sets on each."}, {"kind": "intensity", "text": "Failure on rep 3 of sets 4–6 is acceptable. If falling consistently earlier, reduce difficulty; if completing every set easily, increase next session. Aim to feel powered out, not pumped."}],
+            "steps": [{"type": "repeat", "sets": 6, "rest_seconds": 180, "children": [{"type": "action", "label": "Flash-grade boulder", "reps": 3, "rest_seconds": 60}]}],
+            "reason": "Unready pending flash-grade profile and high-intensity boulder selection review."
+        },
+        {
+            "slug": "7-3s-70",
+            "title": "7:3s 70%",
+            "category": "conditioning",
+            "status": "draft",
+            "original_category": "Power Endurance",
+            "original_subcategory": "Anaerobic Capacity",
+            "load_basis":{"kind":"percent_of_total_load","percent":70,"test":"matching seven-second finger-strength assessment","formula":"body mass plus test-added load","requires":["matching 20 mm edge","matching grip"]},
+            "source_completeness":"complete","purpose":["finger power endurance"],"effects":[{"text":"repeaters at 70 percent total load","basis":"source"}],"duration":{"source_minutes":25},"equipment":{"required_all":["20 mm edge"],"required_any":["fingerboard","hangboard","pulley system"]},"eligibility":{"required_profile":["finger_strength_test"]},"restrictions":[{"kind":"load","text":"Reduce load if six repetitions cannot be completed."}],"steps":[{"type":"repeat","sets":6,"rest_seconds":180,"children":[{"type":"repeat","reps":6,"seconds":7,"rest_seconds":3,"children":[{"type":"action","label":"Dead hang"}]}]}],"reason":"Unready pending matching total-load test and grip/edge baseline."
+        },
+        {
+            "slug": "6-in-6",
+            "title": "6 in 6",
+            "category": "climbing",
+            "status": "needs_review",
+            "original_category": "Power Endurance",
+            "original_subcategory": "Anaerobic Capacity",
+            "source_completeness": "complete",
+            "purpose": ["power endurance on well-rehearsed flash-grade boulders"],
+            "effects": [{"text": "climb one 4–6 move boulder at each minute boundary", "basis": "source"}],
+            "duration": {"sets": 3, "minute_windows_per_set": 6, "rest_seconds_between_sets": 300},
+            "equipment": {"required_all": [], "required_any": ["training board", "steep bouldering wall"]},
+            "eligibility": {"required_profile": ["boulder flash grade"]},
+            "restrictions": [{"kind": "selection", "text": "Use well-rehearsed, difficult but manageable 4–6 move problems around flash grade; use one problem for every rep or a different problem each rep."}, {"kind": "timing", "text": "Each rep occupies one minute: climb on the minute, then rest for the remaining time (source estimates about 25 seconds climbing and 35 seconds rest)."}],
+            "steps": [{"type": "repeat", "sets": 3, "rest_seconds": 300, "children": [{"type": "action", "label": "Boulder in a one-minute work/rest window", "reps": 6, "seconds": 60, "instruction": "Begin each climb on the minute and rest for the remainder of that minute."}]}],
+            "reason": "Unready pending flash-grade profile and review of minute-window adaptation."
+        }
+    ]
+}

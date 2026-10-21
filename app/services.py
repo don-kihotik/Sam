@@ -14,7 +14,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import AIService
 from app.analytics import grade_rank, refresh_analytics_snapshots
+from app.coaching import (
+    align_session_plan,
+    generate_checked_reply,
+    intent_question,
+    requested_session_minutes,
+    useful_followup,
+    validate_catalog_choices,
+)
 from app.config import Settings
+from app.conversation_tasks import complete_planning_task, sync_open_planning_task
 from app.db.models import (
     Athlete,
     BacklogItem,
@@ -29,21 +38,28 @@ from app.db.models import (
     Outbox,
     Plan,
     ProcessingRun,
+    TrainingPreference,
     Workout,
     WorkoutEntry,
 )
 from app.grades import normalize_grade
+from app.membership import ensure_preference
 from app.memory import (
     ContextBuilder,
     is_history_audit_request,
     recent_message_text,
     render_history_audit,
-    render_plan,
     semantic_history,
 )
+from app.planning import save_plan
 from app.prompts import PROMPT_VERSION
+from app.readiness import recent_illness_unresolved
 from app.records import retire_related, retract_edited_source, save_session
+from app.request_policy import preflight_request
 from app.schemas import CoachReply, CorrectionCandidate, MessageExtraction, PlanCandidate
+from app.session_intent import resolve_session_intent
+from app.training_commands import handle_training_command, session_buttons
+from app.training_profile import apply_training_profile
 
 logger = logging.getLogger(__name__)
 
@@ -236,6 +252,29 @@ class MessageProcessor:
         )
         if athlete is None:
             return ProcessResult(ignored_unknown_user=True)
+        preference = await ensure_preference(session, athlete)
+        if incoming.telegram_chat_id < 0 and (
+            incoming.telegram_chat_id != self.settings.telegram_allowed_chat_id
+            or preference.shared_chat_id != incoming.telegram_chat_id
+        ):
+            queued_run = await session.scalar(
+                select(ProcessingRun)
+                .join(Message, Message.id == ProcessingRun.message_id)
+                .where(
+                    Message.athlete_id == athlete.id,
+                    Message.telegram_chat_id == incoming.telegram_chat_id,
+                    Message.telegram_message_id == incoming.telegram_message_id,
+                    ProcessingRun.status.in_(["received", "started", "retry"]),
+                )
+            )
+            if queued_run:
+                queued_run.status, queued_run.error = "completed", "sharing_revoked"
+                await session.commit()
+            return ProcessResult(ignored_unknown_user=True)
+        if incoming.telegram_chat_id > 0:
+            if incoming.telegram_chat_id != athlete.telegram_user_id:
+                return ProcessResult(ignored_unknown_user=True)
+            preference.private_chat_id = incoming.telegram_chat_id
         message = await session.scalar(
             select(Message).where(
                 Message.telegram_chat_id == incoming.telegram_chat_id,
@@ -283,12 +322,69 @@ class MessageProcessor:
         message_id, athlete_id = message.id, athlete.id
         try:
             today = incoming.timestamp.astimezone(ZoneInfo(athlete.timezone)).date()
+            denied = await preflight_request(
+                session, athlete=athlete, message=message, ai=self.ai, settings=self.settings
+            )
+            if denied:
+                addressed = incoming.telegram_chat_id > 0 or is_directly_addressed(
+                    incoming.text,
+                    is_reply_to_sam=incoming.is_reply_to_sam,
+                    allow_transcription_aliases=incoming.message_type in {"voice", "video_note"},
+                )
+                if addressed:
+                    session.add(
+                        Outbox(
+                            source_message_id=message.id,
+                            revision=message.revision,
+                            athlete_id=athlete.id,
+                            telegram_chat_id=incoming.telegram_chat_id,
+                            reply_to_message_id=incoming.telegram_message_id,
+                            text=denied,
+                        )
+                    )
+                run.status, run.error, run.next_attempt_at = "completed", None, None
+                run.extracted = {
+                    "policy": (message.processing_data or {})
+                    .get("request_policy", {})
+                    .get("decision")
+                }
+                await session.commit()
+                return ProcessResult(
+                    reply=denied if addressed else None,
+                    message_id=message.id,
+                    athlete_id=athlete.id,
+                    mutations=[],
+                )
+            command = await handle_training_command(
+                session, athlete=athlete, message=message, settings=self.settings, today=today
+            )
+            if command and not command.model_request:
+                session.add(
+                    Outbox(
+                        source_message_id=message.id,
+                        revision=message.revision,
+                        athlete_id=athlete.id,
+                        telegram_chat_id=incoming.telegram_chat_id,
+                        reply_to_message_id=incoming.telegram_message_id,
+                        text=command.text,
+                        payload=command.payload,
+                    )
+                )
+                run.status, run.error, run.next_attempt_at = "completed", None, None
+                run.extracted = {"command": incoming.text.split()[0]}
+                await session.commit()
+                return ProcessResult(
+                    reply=command.text, message_id=message.id, athlete_id=athlete.id, mutations=[]
+                )
             recent = await recent_message_text(
                 session,
                 athlete.id,
                 limit=24,
                 chat_id=incoming.telegram_chat_id,
                 exclude_message_id=message.id,
+            )
+            planning_task = await sync_open_planning_task(
+                session, preference=preference, message=message, now=incoming.timestamp,
             )
             followup = await session.scalar(
                 select(FollowUp)
@@ -308,6 +404,31 @@ class MessageProcessor:
                 reply_to_message_id=incoming.reply_to_message_id,
                 followup=followup,
             )
+            if planning_task:
+                session_context += "\n" + planning_task.model_context()
+            intent = await resolve_session_intent(
+                session, athlete_id=athlete.id, chat_id=incoming.telegram_chat_id,
+                text=incoming.text, today=today, now=incoming.timestamp,
+                current_message_id=message.id,
+            )
+            intent_target = await session.get(Plan, intent.target_plan_id) if intent.target_plan_id else None
+            illness_unresolved = await recent_illness_unresolved(
+                session, athlete_id=athlete.id, chat_id=incoming.telegram_chat_id, now=incoming.timestamp,
+            )
+            intent_context = "\nSESSION INTENT (verified calendar and owned conversation link):\n" + json.dumps({
+                "date": str(intent.date) if intent.date else None,
+                "weekday": intent.date.strftime("%A") if intent.date else None,
+                "target_plan_id": intent.target_plan_id,
+                "ambiguity": intent.ambiguity,
+                "current_session": intent_target.content if intent_target else None,
+                "recent_reported_illness_without_explicit_recovery": illness_unresolved,
+                "requested_max_minutes": requested_session_minutes(incoming.text),
+            }, ensure_ascii=False)
+            session_context += intent_context
+            if command and command.model_request:
+                session_context += (
+                    "\nCOMMAND INTENT (not factual evidence):\n" + command.model_request
+                )
             addressed = (
                 is_directly_addressed(
                     incoming.text,
@@ -325,6 +446,17 @@ class MessageProcessor:
                 directly_addressed=addressed,
             )
             remove_inferred_numeric_ratings(incoming.text, extraction)
+            if extraction.plan.action != "none" and extraction.plan.scope == "session":
+                if intent.ambiguity:
+                    extraction.plan.action = "none"
+                elif addressed or extraction.conversation_intent == "continuation" or extraction.should_respond:
+                    # One writer per coached session: the extractor records facts,
+                    # the coach constructs the complete validated revision. Saving
+                    # both would supersede the target before the coach can use it.
+                    intent_context += "\nSession changes requested; the coach must return the full structured revision."
+                    extraction.plan.action = "none"
+                else:
+                    extraction.plan = align_session_plan(extraction.plan, intent, intent_target)
             for extra in extraction.additional_workouts:
                 remove_inferred_numeric_ratings(
                     incoming.text, MessageExtraction(normalized_text=incoming.text, workout=extra)
@@ -375,8 +507,12 @@ class MessageProcessor:
                 m.get("status") == "needs_session_clarification" for m in mutations
             )
             reply = None
+            reply_payload = {}
             if should_reply or needs_clarification:
-                if needs_clarification:
+                if intent.ambiguity and not extraction.workout.present:
+                    reply = intent_question(intent.ambiguity)
+                    coach_reply = CoachReply(text=reply)
+                elif needs_clarification:
                     reply = "Уточни, к какой тренировке относится поправка — дата или ответ на её запись?"
                     coach_reply = CoachReply(text=reply)
                 elif is_history_audit_request(incoming.text):
@@ -412,25 +548,80 @@ class MessageProcessor:
                             },
                             ensure_ascii=False,
                         ),
+                        session_date=intent.date or today,
                     )
-                    coach_reply = await self.ai.coach_reply(
-                        context=context, safety_identifier=f"telegram-{athlete.id}"
+                    context += intent_context
+                    if planning_task:
+                        context += "\n" + planning_task.model_context()
+                    if command and command.model_request:
+                        context += "\nCOMMAND INTENT:\n" + command.model_request
+                    async def save_candidate(candidate):
+                        async with session.begin_nested():
+                            if (
+                                planning_task
+                                and planning_task.requested_scope == "program"
+                                and candidate.scope == "program"
+                                and candidate.action == "create"
+                            ):
+                                existing_program_query = select(Plan).where(
+                                    Plan.athlete_id == athlete.id,
+                                    Plan.scope == "program",
+                                    Plan.status == "active",
+                                )
+                                if incoming.telegram_chat_id < 0:
+                                    existing_program_query = existing_program_query.where(
+                                        Plan.visibility == "group"
+                                    )
+                                existing_program = await session.scalar(
+                                    existing_program_query.order_by(desc(Plan.id)).limit(1)
+                                )
+                                if existing_program:
+                                    candidate = candidate.model_copy(
+                                        update={
+                                            "action": "update",
+                                            "target_plan_id": existing_program.id,
+                                        },
+                                        deep=True,
+                                    )
+                            await validate_catalog_choices(
+                                session, candidate, illness_unresolved=illness_unresolved, as_of=today,
+                            )
+                            record = await self._upsert_plan(
+                                session, athlete_id=athlete.id, candidate=candidate,
+                                source_message_id=message.id,
+                                evidence=[candidate.summary or "Generated plan"], today=today,
+                                max_duration_minutes=requested_session_minutes(incoming.text),
+                            )
+                            if planning_task and record.scope == planning_task.requested_scope:
+                                record.source_message_ids = list(dict.fromkeys(
+                                    [*planning_task.source_message_ids, message.id]
+                                ))
+                            return record
+
+                    checked = await generate_checked_reply(
+                        ai=self.ai, context=context, safety_identifier=f"telegram-{athlete.id}",
+                        message_id=message.id, intent=intent, target=intent_target,
+                        save_candidate=save_candidate, request_text=incoming.text,
+                        planning_task=planning_task,
                     )
-                    reply = coach_reply.text.strip()
-                if coach_reply.plan.action != "none":
-                    plan = coach_reply.plan
-                    # The plan object is the displayed plan, not a second interpretation of prose.
-                    record = await self._upsert_plan(
-                        session,
-                        athlete_id=athlete.id,
-                        candidate=plan,
-                        source_message_id=message.id,
-                        evidence=[plan.summary or "Generated plan"],
-                        today=today,
-                    )
-                    reply = (reply or "") + "\n\n" + render_plan(record)
-                if coach_reply.follow_up_question and not extraction.is_banter:
-                    question = coach_reply.follow_up_question.strip()
+                    coach_reply, reply = checked.reply, checked.text
+                    run.extracted = {**run.extracted, "coaching_diagnostics": checked.diagnostics}
+                    if checked.record:
+                        if planning_task and checked.record.scope == planning_task.requested_scope:
+                            complete_planning_task(
+                                preference, planning_task, plan_id=checked.record.id,
+                            )
+                        mutations.append({"kind": "plan", "id": checked.record.id, "status": "saved"})
+                        if checked.record.scope == "session" and incoming.telegram_chat_id > 0:
+                            reply_payload = session_buttons(checked.record.id)
+                pending_questions = list(await session.scalars(select(FollowUp.question).where(
+                    FollowUp.athlete_id == athlete.id,
+                    FollowUp.telegram_chat_id == incoming.telegram_chat_id,
+                    FollowUp.status.in_(["pending", "awaiting_delivery"]),
+                    FollowUp.expires_at > incoming.timestamp,
+                )))
+                question = useful_followup(coach_reply.follow_up_question, pending_questions)
+                if question and not extraction.is_banter:
                     if question.casefold() not in (reply or "").casefold():
                         reply = (reply or "") + "\n\n" + question
                     workout_id = coach_reply.follow_up_workout_id
@@ -477,6 +668,7 @@ class MessageProcessor:
                                 telegram_chat_id=incoming.telegram_chat_id,
                                 reply_to_message_id=incoming.telegram_message_id,
                                 text=reply,
+                                payload=reply_payload,
                             )
                         )
             run.mutations = mutations
@@ -529,6 +721,7 @@ class MessageProcessor:
             message_type="text",
             raw_text=text,
             normalized_text=text,
+            processing_data={"response_policy": PROMPT_VERSION},
             reply_to_message_id=reply_to_message_id,
             telegram_timestamp=timestamp or datetime.now(UTC),
         )
@@ -593,6 +786,16 @@ class MessageProcessor:
         changes = []
         public = message.telegram_chat_id == self.settings.telegram_allowed_chat_id
         visibility = "group" if public else "private"
+        if not extraction.is_banter:
+            changes.extend(
+                await apply_training_profile(
+                    session,
+                    athlete=athlete,
+                    message=message,
+                    candidate=extraction.training_profile,
+                    text=source_text,
+                )
+            )
         for index, c in enumerate([extraction.workout, *extraction.additional_workouts]):
             if not c.present or extraction.is_banter:
                 continue
@@ -607,6 +810,10 @@ class MessageProcessor:
                 today=today,
             )
             changes.append({"kind": "workout", "id": w.id if w else None, "status": status})
+            if w is not None and message.telegram_chat_id > 0:
+                preference = await session.get(TrainingPreference, athlete.id)
+                if preference and w.plan_id and w.plan_id == preference.log_plan_id:
+                    preference.log_workout_id = w.id
         state = extraction.daily_state
         if (
             state.present
@@ -732,11 +939,8 @@ class MessageProcessor:
             and not extraction.is_banter
         ):
             targets = [athlete]
-            # Shared changes are only accepted from the shared conversation.
-            if event.shared and public:
-                targets = (
-                    await session.scalars(select(Athlete).where(Athlete.active.is_(True)))
-                ).all()
+            # A shared trip can be mentioned, but one athlete never updates
+            # another athlete's calendar/profile through conversation.
             for person in targets:
                 old = (
                     await session.scalars(
@@ -787,15 +991,19 @@ class MessageProcessor:
         if extraction.plan.action != "none" and valid_evidence(
             source_text, extraction.plan.evidence
         ):
-            p = await self._upsert_plan(
-                session,
-                athlete_id=athlete.id,
-                candidate=extraction.plan,
-                source_message_id=message.id,
-                evidence=extraction.plan.evidence,
-                today=today,
-            )
-            changes.append({"kind": "plan", "id": p.id})
+            try:
+                async with session.begin_nested():
+                    p = await self._upsert_plan(
+                        session,
+                        athlete_id=athlete.id,
+                        candidate=extraction.plan,
+                        source_message_id=message.id,
+                        evidence=extraction.plan.evidence,
+                        today=today,
+                    )
+                changes.append({"kind": "plan", "id": p.id})
+            except (ValueError, PermissionError) as exc:
+                changes.append({"kind": "plan", "status": "rejected_invalid_plan", "reason": str(exc)[:1200]})
         await session.flush()
         return changes
 
@@ -808,33 +1016,20 @@ class MessageProcessor:
         source_message_id: int,
         evidence: list[str],
         today: date,
+        max_duration_minutes: int | None = None,
     ) -> Plan:
-        current = (
-            await session.scalars(
-                select(Plan).where(Plan.athlete_id == athlete_id, Plan.status == "active")
-            )
-        ).all()
-        for p in current:
-            p.status = "superseded"
         source = await session.get(Message, source_message_id)
         public = source and source.telegram_chat_id == self.settings.telegram_allowed_chat_id
-        record = Plan(
+        return await save_plan(
+            session,
             athlete_id=athlete_id,
-            start_date=candidate.start_date or today,
-            end_date=candidate.end_date or (today + timedelta(days=6)),
-            content={
-                "summary": candidate.summary,
-                "current_focus": candidate.focus,
-                "weekly_schedule": {item.day: item.activity for item in candidate.weekly_schedule},
-                "guardrails": candidate.guardrails,
-            },
-            source_message_ids=[source_message_id],
+            candidate=candidate,
+            source_message_id=source_message_id,
             evidence=evidence,
+            today=today,
             visibility="group" if public else "private",
+            max_duration_minutes=max_duration_minutes,
         )
-        session.add(record)
-        await session.flush()
-        return record
 
     async def _apply_correction(
         self,
@@ -906,14 +1101,9 @@ class MessageProcessor:
                     await session.flush()
                     return correction
             if candidate.correct_athlete_name:
-                recipient = await session.scalar(
-                    select(Athlete).where(Athlete.name == candidate.correct_athlete_name)
-                )
-                if not recipient:
-                    await session.flush()
-                    return correction
-                target.athlete_id = recipient.id
-                await refresh_analytics_snapshots(session, recipient.id, today)
+                correction.status = "rejected_cross_athlete"
+                await session.flush()
+                return correction
             if candidate.negate:
                 target.status = "void"
             elif candidate.field in {"grade", "original_grade"}:

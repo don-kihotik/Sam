@@ -9,9 +9,9 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Correction, Fact, Memory, Message, Workout, WorkoutEntry
+from app.db.models import Correction, Fact, Memory, Message, Plan, Workout, WorkoutEntry
 from app.grades import grade_rank, normalize_discipline, normalize_grade
-from app.schemas import WorkoutCandidate
+from app.schemas import ActualActivityCandidate, WorkoutCandidate
 
 
 def evidence_in(text: str, quotes: list[str]) -> list[str]:
@@ -42,14 +42,103 @@ def stated_number(text: str, value: float) -> bool:
     return bool(re.search(rf"(?<![\w.])(?:{re.escape(n)}|{words})(?![\w.])", text, re.IGNORECASE))
 
 
+def stated_measurement(text: str, value: float, unit: str) -> bool:
+    """Match a base-unit value against a spoken/written unit, including km→m."""
+
+    aliases = {
+        "kg": ((1.0, r"(?:kg|кг|килограмм(?:а|ов)?)"),),
+        "m": ((1.0, r"(?:m|метр(?:а|ов)?|м)"),),
+        "km": ((1000.0, r"(?:km|км|километр(?:а|ов)?)"),),
+        "seconds": (
+            (1.0, r"(?:s|sec(?:onds?)?|сек(?:унд(?:ы|у|а)?)?)"),
+            (60.0, r"(?:min(?:utes?)?|мин(?:ут(?:ы|у|а)?)?)"),
+        ),
+        "minutes": (
+            (1.0, r"(?:min(?:utes?)?|мин(?:ут(?:ы|у|а)?)?)"),
+            (60.0, r"(?:h|hours?|час(?:а|ов)?)"),
+        ),
+    }
+    for scale, suffix in aliases.get(unit, ()):  # only known units can validate a fact
+        values = re.findall(rf"(?<![\w.])(\d+(?:[.,]\d+)?)\s*{suffix}(?!\w)", text, re.IGNORECASE)
+        # Russian reports often say "минут 40" rather than "40 минут".
+        values += re.findall(rf"{suffix}\s*(\d+(?:[.,]\d+)?)(?!\w)", text, re.IGNORECASE)
+        for raw in values:
+            if abs(float(raw.replace(",", ".")) * scale - float(value)) < 0.0001:
+                return True
+    if unit == "m":
+        return stated_measurement(text, value, "km")
+    return False
+
+
+def _validated_activities(candidate: WorkoutCandidate, text: str) -> list[ActualActivityCandidate]:
+    """Retain only values that have their own source evidence.
+
+    A plan can be shown in the UI, but it is deliberately unavailable here: this
+    function only receives words supplied in the current report/confirmation.
+    """
+
+    activities: list[ActualActivityCandidate] = []
+    for activity in candidate.activities:
+        item = activity.model_dump(mode="json")
+        matched = evidence_in(text, activity.evidence or candidate.evidence)
+        source = " ".join(matched)
+        # Explicit activity evidence is required before anything becomes a fact.
+        if not source:
+            continue
+        else:
+            if item.get("duration_minutes") is not None and not stated_measurement(
+                source, item["duration_minutes"], "minutes"
+            ):
+                item["duration_minutes"] = None
+            if item.get("distance_m") is not None and not stated_measurement(
+                source, item["distance_m"], "m"
+            ):
+                item["distance_m"] = None
+            validated_sets = []
+            for set_item in item.get("sets", []):
+                set_source = " ".join(evidence_in(text, set_item.get("evidence", []))) or source
+                if not set_source:
+                    continue
+                for key, unit in (
+                    ("set_number", None),
+                    ("reps", None),
+                    ("weight_kg", "kg"),
+                    ("duration_seconds", "seconds"),
+                    ("distance_m", "m"),
+                ):
+                    if set_item.get(key) is None:
+                        continue
+                    stated = (
+                        stated_measurement(set_source, set_item[key], unit)
+                        if unit
+                        else stated_number(set_source, set_item[key])
+                    )
+                    if not stated:
+                        set_item[key] = None
+                set_item["evidence"] = evidence_in(text, set_item.get("evidence", [])) or matched
+                # Don't retain an empty anonymous set merely because a protocol had one.
+                if any(
+                    set_item.get(key) is not None
+                    for key in ("reps", "weight_kg", "duration_seconds", "distance_m")
+                ):
+                    validated_sets.append(set_item)
+            item["sets"] = validated_sets
+            item["evidence"] = matched
+        activities.append(ActualActivityCandidate.model_validate(item))
+    return activities
+
+
 def validate_workout(candidate: WorkoutCandidate, text: str) -> WorkoutCandidate:
     result = candidate.model_copy(deep=True)
     result.evidence = evidence_in(text, candidate.evidence)
     if not result.evidence:
         result.present = False
         return result
-    if result.duration_minutes is not None and not stated_number(text, result.duration_minutes):
+    if result.duration_minutes is not None and not stated_measurement(
+        text, result.duration_minutes, "minutes"
+    ):
         result.duration_minutes = None
+    result.activities = _validated_activities(result, text)
     for entry in result.climbing:
         source = " ".join(evidence_in(text, entry.evidence)) or text
         entry.discipline = normalize_discipline(entry.discipline, entry.wall_style)
@@ -95,6 +184,7 @@ def rebuild_workout(workout: Workout, contributions: list[dict]) -> None:
     """Rebuild the materialized session from source contributions, including edited sources."""
     details = dict(workout.structured_details or {})
     entries: list[dict] = []
+    activities: list[dict] = []
     notes, evidence, sources = [], [], []
     duration = rpe = pump = None
     pain_status = "unknown"
@@ -118,7 +208,27 @@ def rebuild_workout(workout: Workout, contributions: list[dict]) -> None:
             pain_status = "reported"
         if value.get("session_action") == "correct" and value.get("climbing"):
             entries = []
+        if value.get("session_action") == "correct" and value.get("activities"):
+            corrected = {
+                (
+                    activity.get("kind"),
+                    activity.get("exercise") or activity.get("title"),
+                    activity.get("condition"),
+                )
+                for activity in value["activities"]
+            }
+            activities = [
+                activity
+                for activity in activities
+                if (
+                    activity.get("kind"),
+                    activity.get("exercise") or activity.get("title"),
+                    activity.get("condition"),
+                )
+                not in corrected
+            ]
         entries.extend(value.get("climbing", []))
+        activities.extend(value.get("activities", []))
     workout.duration_minutes = duration
     workout.rpe = rpe
     workout.pain_status = pain_status
@@ -129,6 +239,7 @@ def rebuild_workout(workout: Workout, contributions: list[dict]) -> None:
         **details,
         "contributions": contributions,
         "climbing": entries,
+        "activities": activities,
         "pump": pump,
         "pain": pain,
     }
@@ -191,6 +302,10 @@ async def save_session(
         return None, "rejected_no_current_evidence"
     # Unknown historical dates remain unknown. "Today" is resolved by extraction.
     day = c.date or (today if c.date_precision in {"day", "exact"} else None)
+    if c.plan_id is not None:
+        plan = await session.get(Plan, c.plan_id)
+        if plan is None or plan.athlete_id != athlete_id or plan.scope != "session":
+            return None, "needs_plan_clarification"
     candidates = (
         await session.scalars(
             select(Workout)
@@ -217,7 +332,19 @@ async def save_session(
         )
         if parent:
             target = next((w for w in candidates if parent.id in w.source_message_ids), None)
-    if target is None and c.session_action in {"append", "correct"}:
+    # One concrete session plan maps to at most one active actual workout for its
+    # day.  This prevents repeated voice/text reports from creating duplicates.
+    if target is None and c.plan_id is not None:
+        planned = [
+            w for w in candidates if w.plan_id == c.plan_id and (day is None or w.date == day)
+        ]
+        if len(planned) == 1:
+            target = planned[0]
+        elif len(planned) > 1:
+            return None, "needs_session_clarification"
+    # An explicit plan is a stronger identity than date.  Never merge it into
+    # an unrelated same-day run/climb simply because that is the only row.
+    if target is None and c.plan_id is None and c.session_action in {"append", "correct"}:
         same_day = [w for w in candidates if day and w.date == day]
         if len(same_day) == 1:
             target = same_day[0]
@@ -250,9 +377,19 @@ async def save_session(
                     target = w
                     break
     created = target is None
+    if target is not None and c.plan_id is not None:
+        if target.plan_id not in (None, c.plan_id):
+            return None, "needs_plan_clarification"
+        # Only an explicit requested workout may be linked retroactively.  A
+        # reply/date heuristic should not silently reclassify an old session.
+        if target.plan_id is None and (
+            c.target_workout_id is not None or follow_up_workout_id is not None
+        ):
+            target.plan_id = c.plan_id
     if created:
         target = Workout(
             athlete_id=athlete_id,
+            plan_id=c.plan_id,
             date=day,
             date_precision=c.date_precision,
             type=c.workout_type or "climbing",
@@ -267,7 +404,9 @@ async def save_session(
     if not contributions and target.source_message_ids:
         contributions = [legacy_contribution(target)]
     contributions = [x for x in contributions if x["source"] != message.id]
-    contributions.append({"source": message.id, "value": c.model_dump(mode="json")})
+    contributions.append(
+        {"source": message.id, "sources": [message.id], "value": c.model_dump(mode="json")}
+    )
     rebuild_workout(target, contributions)
     if c.session_action == "correct":
         await retire_related(session, athlete_id, target.source_message_ids)

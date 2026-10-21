@@ -154,14 +154,14 @@ async def test_private_context_excluded_but_training_numbers_shared(database, se
     assert "PRIVATE_CANARY" in personal
 
 
-async def test_group_history_contains_both_named_speakers(database, settings):
+async def test_group_history_contains_only_requesting_speaker(database, settings):
     async with database.sessions() as s:
         for n, user, text in [(215, 101, "Мои трассы короткие"), (216, 202, "Мои по 17 метров")]:
             await MessageProcessor(
                 settings, FakeAIService(MessageExtraction(normalized_text=text))
             ).process(s, incoming(n, text, user=user))
         history = await recent_message_text(s, 1, chat_id=-100123)
-    assert "speaker=Alexey" in history and "speaker=Andrey" in history
+    assert "speaker=Alexey" in history and "speaker=Andrey" not in history
 
 
 class FailingAI(FakeAIService):
@@ -170,7 +170,7 @@ class FailingAI(FakeAIService):
 
 
 async def test_failed_extraction_is_retryable_and_error_is_not_masked(database, settings):
-    msg = incoming(220, "Сэм, привет")
+    msg = incoming(220, "Сэм, что мне тренировать сегодня?")
     async with database.sessions() as s:
         with pytest.raises(RuntimeError, match="synthetic failure"):
             await MessageProcessor(
@@ -207,10 +207,12 @@ async def test_reply_and_plan_saved_atomically_before_delivery(database, setting
         result = await MessageProcessor(
             settings, PlannedAI(MessageExtraction(normalized_text="plan"))
         ).process(s, incoming(230, "Сэм, составь план"))
-        plan = await s.scalar(select(Plan).where(Plan.athlete_id == 1, Plan.status == "active"))
+        plan = await s.scalar(
+            select(Plan).where(Plan.athlete_id == 1, Plan.status == "active", Plan.scope == "week")
+        )
         queued = await s.scalar(select(Outbox))
     assert plan.content["weekly_schedule"]["Tuesday"] == "easy autobelay volume"
-    assert "easy autobelay volume" in result.reply
+    assert "easy автостраховка volume" in result.reply
     assert queued.text == result.reply and queued.status == "pending"
 
 

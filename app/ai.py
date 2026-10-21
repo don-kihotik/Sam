@@ -6,6 +6,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
+from app.catalog_intake import CATALOG_PHOTO_PROMPT, CatalogPhotoText
 from app.config import Settings
 from app.prompts import (
     COACH_ARTIFACTS_SYSTEM_PROMPT,
@@ -14,6 +15,7 @@ from app.prompts import (
     TRANSCRIPTION_PROMPT,
     VIDEO_ANALYSIS_SYSTEM_PROMPT,
 )
+from app.request_policy import SCOPE_PROMPT, ScopeDecision
 from app.schemas import CoachArtifacts, CoachReply, MessageExtraction
 
 
@@ -25,6 +27,17 @@ class AIService:
             timeout=120.0,
             max_retries=2,
         )
+
+    async def classify_scope(self, *, text: str, context: str = "") -> ScopeDecision:
+        response = await self.client.with_options(timeout=20.0, max_retries=0).responses.parse(
+            model=self.settings.extraction_model,
+            instructions=SCOPE_PROMPT,
+            input=f"OWN LIMITED CONTEXT:\n{context[:1200]}\nCURRENT REQUEST:\n{text[: self.settings.policy_max_text_chars]}",
+            text_format=ScopeDecision,
+            max_output_tokens=512,
+            store=False,
+        )
+        return response.output_parsed or ScopeDecision(decision="unclear")
 
     async def extract(
         self,
@@ -46,6 +59,7 @@ class AIService:
             instructions=EXTRACTION_SYSTEM_PROMPT,
             input=user_input,
             text_format=MessageExtraction,
+            max_output_tokens=6000,
             store=False,
         )
         if response.output_parsed is None:
@@ -57,6 +71,7 @@ class AIService:
             model=self.settings.sam_model,
             instructions=SAM_SYSTEM_PROMPT,
             input=context,
+            max_output_tokens=2000,
             store=False,
             safety_identifier=safety_identifier[:64],
         )
@@ -65,12 +80,22 @@ class AIService:
             raise RuntimeError("Coaching model returned an empty response")
         return text
 
-    async def coach_reply(self, *, context: str, safety_identifier: str) -> CoachReply:
+    async def coach_reply(self, *, context: str, safety_identifier: str, repair: bool = False) -> CoachReply:
         response = await self.client.responses.parse(
             model=self.settings.sam_model,
-            instructions=SAM_SYSTEM_PROMPT,
+            instructions=SAM_SYSTEM_PROMPT + ("""
+REPAIR TURN: the previous proposal was rejected and was NOT saved. Read PLAN VALIDATION
+FEEDBACK at the end of the input. Do not repeat the rejected candidate. Rebuild a complete
+valid session that fixes the specified error. In particular, a time budget is for the WHOLE
+session including warmup, rest and cooldown, not only its main part. If a fixed catalog
+recipe cannot fit, replace it with a clearly named ad_hoc timed technical block, not an
+unpermitted alteration of the catalog. Every timed block includes its rests. Add up all
+block durations before returning. Never fabricate recovery or readiness; future return
+plans remain conditional. If it is genuinely unsafe or impossible to plan, return action=none.
+""" if repair else ""),
             input=context,
             text_format=CoachReply,
+            max_output_tokens=6000,
             store=False,
             safety_identifier=safety_identifier[:64],
         )
@@ -84,6 +109,7 @@ class AIService:
             instructions=COACH_ARTIFACTS_SYSTEM_PROMPT,
             input=text,
             text_format=CoachArtifacts,
+            max_output_tokens=6000,
             store=False,
         )
         if response.output_parsed is None:
@@ -132,6 +158,7 @@ class AIService:
         response = await self.client.responses.create(
             model=self.settings.sam_model,
             instructions=VIDEO_ANALYSIS_SYSTEM_PROMPT,
+            max_output_tokens=1800,
             input=[{"role": "user", "content": content}],
             store=False,
             safety_identifier=safety_identifier[:64],
@@ -151,6 +178,32 @@ class AIService:
         )
         return result.data[0].embedding
 
+    async def read_catalog_photo(self, photo: bytes) -> dict[str, Any]:
+        encoded = base64.b64encode(photo).decode("ascii")
+        response = await self.client.responses.parse(
+            model=self.settings.extraction_model,
+            instructions=CATALOG_PHOTO_PROMPT,
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "Read this catalog source screenshot."},
+                        {
+                            "type": "input_image",
+                            "image_url": f"data:image/jpeg;base64,{encoded}",
+                            "detail": "high",
+                        },
+                    ],
+                }
+            ],
+            text_format=CatalogPhotoText,
+            max_output_tokens=2500,
+            store=False,
+        )
+        if response.output_parsed is None:
+            raise RuntimeError("Catalog screenshot returned no parsed transcription")
+        return response.output_parsed.model_dump(mode="json")
+
 
 class FakeAIService:
     """Small test double accepted by MessageProcessor."""
@@ -163,11 +216,14 @@ class FakeAIService:
     async def extract(self, **_: Any) -> MessageExtraction:
         return self.extraction
 
+    async def classify_scope(self, **_: Any) -> ScopeDecision:
+        return ScopeDecision(decision="allow")
+
     async def coach(self, *, context: str, safety_identifier: str) -> str:
         self.coach_contexts.append(context)
         return self.reply
 
-    async def coach_reply(self, *, context: str, safety_identifier: str) -> CoachReply:
+    async def coach_reply(self, *, context: str, safety_identifier: str, repair: bool = False) -> CoachReply:
         return CoachReply(
             text=await self.coach(context=context, safety_identifier=safety_identifier)
         )
