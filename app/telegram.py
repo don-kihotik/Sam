@@ -34,11 +34,17 @@ from app.db.models import (
     Message,
     Outbox,
     ProcessingRun,
+    SharedChat,
     TrainingPreference,
 )
 from app.db.session import Database
 from app.delivery import split_reply
-from app.membership import ensure_preference, redeem_invitation
+from app.membership import (
+    create_group_invitation,
+    ensure_preference,
+    is_group_member,
+    redeem_invitation_details,
+)
 from app.planning import latest_session_plan, render_training_plan
 from app.prompts import SELF_ONLY_PROMPT_VERSIONS
 from app.scheduling import enqueue_morning_plans
@@ -156,6 +162,7 @@ class TelegramRuntime:
         self._worker: asyncio.Task | None = None
         self._scheduler: asyncio.Task | None = None
         self._bot_id: int | None = None
+        self._bot_username: str | None = None
         self._wake = asyncio.Event()
         self._lock = asyncio.Lock()
         self.last_update_at = self.last_success_at = None
@@ -167,7 +174,7 @@ class TelegramRuntime:
 
     async def start(self) -> None:
         me = await self.bot.get_me()
-        self._bot_id = me.id
+        self._bot_id, self._bot_username = me.id, me.username
         self._worker = asyncio.create_task(self._work(), name="sam-worker")
         self._scheduler = asyncio.create_task(self._run_scheduler(), name="sam-reminders")
         self._task = asyncio.create_task(
@@ -214,8 +221,15 @@ class TelegramRuntime:
     async def _handle_message(self, message: TelegramMessage) -> None:
         if not message.from_user or message.from_user.is_bot:
             return
+        if await self._maybe_handle_group_add(message):
+            return
         if message.text and message.text.split("@", 1)[0].strip().lower() == "/whoami":
-            await message.reply(f"Твой Telegram user ID: {message.from_user.id}")
+            suffix = (
+                f"\nID этого чата: {message.chat.id}"
+                if message.chat.type != ChatType.PRIVATE
+                else ""
+            )
+            await message.reply(f"Твой Telegram user ID: {message.from_user.id}{suffix}")
             return
         self.last_update_at = datetime.now(UTC)
         # Serialize ingestion and processing for this small group, including edits.
@@ -227,18 +241,17 @@ class TelegramRuntime:
                         Athlete.active.is_(True),
                     )
                 )
-                # Only a private /start <token> can introduce a previously
-                # unknown account.  Group membership alone is never authority.
-                if athlete is None:
-                    start = (message.text or "").strip().split(maxsplit=1)
-                    if (
-                        message.chat.type != ChatType.PRIVATE
-                        or len(start) != 2
-                        or start[0].split("@", 1)[0].casefold() != "/start"
-                    ):
-                        return
+                start = (message.text or "").strip().split(maxsplit=1)
+                invite_start = bool(
+                    message.chat.type == ChatType.PRIVATE
+                    and len(start) == 2
+                    and start[0].split("@", 1)[0].casefold() == "/start"
+                )
+                # A deep link is also meaningful for an existing athlete: it
+                # grants a second group without creating a duplicate profile.
+                if invite_start:
                     try:
-                        athlete = await redeem_invitation(
+                        redemption = await redeem_invitation_details(
                             session,
                             token=start[1],
                             telegram_user_id=message.from_user.id,
@@ -247,18 +260,78 @@ class TelegramRuntime:
                             now=datetime.now(UTC),
                         )
                     except (PermissionError, ValueError):
+                        await session.rollback()
+                        await message.reply(
+                            "Эта ссылка недействительна, уже использована или предназначена другому человеку."
+                        )
                         return
+                    athlete = redemption.athlete
+                    shared_chat = (
+                        await session.get(SharedChat, redemption.invitation.shared_chat_id)
+                        if redemption.invitation.shared_chat_id is not None
+                        else None
+                    )
                     await session.commit()
+                    replayed = False
+                    saved = redemption.pending_message.get("telegram_payload")
+                    if isinstance(saved, dict):
+                        try:
+                            original = TelegramMessage.model_validate(saved)
+                        except ValueError:
+                            original = None
+                        if (
+                            original is not None
+                            and original.from_user
+                            and original.from_user.id == message.from_user.id
+                            and original.chat.id == redemption.invitation.shared_chat_id
+                        ):
+                            recorded = await self.processor.record_unprocessed(
+                                session,
+                                IncomingMessage(
+                                    telegram_message_id=original.message_id,
+                                    telegram_chat_id=original.chat.id,
+                                    telegram_user_id=original.from_user.id,
+                                    timestamp=original.date,
+                                    text=original.text or original.caption or "",
+                                    message_type=original.content_type,
+                                    reply_to_message_id=(
+                                        original.reply_to_message.message_id
+                                        if original.reply_to_message
+                                        else None
+                                    ),
+                                    attachment_metadata={"telegram_payload": saved},
+                                ),
+                                status="received",
+                                reason="onboarding_replay",
+                            )
+                            replayed = recorded.message_id is not None and not recorded.duplicate
+                    group_name = shared_chat.title if shared_chat and shared_chat.title else "группе"
+                    extra = " Исходное сообщение уже поставил в обработку." if replayed else ""
+                    await message.reply(
+                        f"Готово: твой отдельный профиль подключён к {group_name}.{extra}\n\n"
+                        "Я могу запоминать тренировки, составлять и адаптировать планы, "
+                        "а затем показывать прогресс. В группе обсуждаю только данные автора сообщения; "
+                        "личный контекст остаётся в личном чате.\n\n"
+                        "Теперь напиши одной фразой: цель в лазании, текущий уровень, "
+                        "сколько раз в неделю можешь тренироваться и какое оборудование доступно."
+                    )
+                    if replayed:
+                        self._wake.set()
+                    return
+                # Group membership alone never introduces an unknown account.
+                if athlete is None:
+                    return
                 elif message.chat.type == ChatType.PRIVATE:
                     preference = await ensure_preference(session, athlete)
                     if preference.private_chat_id is None:
                         preference.private_chat_id = message.chat.id
                         await session.commit()
                 else:
-                    if message.chat.id != self.settings.telegram_allowed_chat_id:
-                        return
-                    preference = await ensure_preference(session, athlete)
-                    if preference.shared_chat_id != message.chat.id:
+                    if not await is_group_member(
+                        session,
+                        athlete_id=athlete.id,
+                        telegram_chat_id=message.chat.id,
+                    ):
                         return
                 row = await session.scalar(
                     select(Message).where(
@@ -336,6 +409,71 @@ class TelegramRuntime:
                         session, incoming, status="received", reason="queued"
                     )
         self._wake.set()
+
+    async def _maybe_handle_group_add(self, message: TelegramMessage) -> bool:
+        """Handle Alexey's `/add` reply even before a new group is trusted."""
+        parts = (message.text or "").strip().split(maxsplit=1)
+        if not parts:
+            return False
+        raw = parts[0]
+        if raw.split("@", 1)[0].casefold() != "/add":
+            return False
+        if message.chat.type not in {ChatType.GROUP, ChatType.SUPERGROUP}:
+            await message.reply("Используй /add ответом на сообщение друга в общем чате.")
+            return True
+        if message.from_user.id != self.settings.alexey_telegram_user_id:
+            await message.reply("Добавлять участников может только администратор Alexey.")
+            return True
+        target_message = message.reply_to_message
+        target = target_message.from_user if target_message else None
+        if target is None or target.is_bot or target.id == message.from_user.id:
+            await message.reply("Ответь командой /add именно на сообщение друга.")
+            return True
+        async with self._lock, self.database.sessions() as session:
+            admin = await session.scalar(
+                select(Athlete).where(
+                    Athlete.telegram_user_id == message.from_user.id,
+                    Athlete.active.is_(True),
+                )
+            )
+            if admin is None:
+                await message.reply("Администратор не зарегистрирован у Сэма.")
+                return True
+            token, invitation = await create_group_invitation(
+                session,
+                created_by=admin,
+                alexey_telegram_user_id=self.settings.alexey_telegram_user_id,
+                telegram_chat_id=message.chat.id,
+                chat_title=message.chat.title,
+                target_telegram_user_id=target.id,
+                pending_message={
+                    "telegram_payload": target_message.model_dump(
+                        mode="json", exclude_none=True
+                    )
+                },
+                now=datetime.now(UTC),
+            )
+            await session.commit()
+        username = self._bot_username
+        if not username:
+            me = await self.bot.get_me()
+            username = me.username
+        if not username:
+            await message.reply("Приглашение создано, но у бота не настроено имя пользователя.")
+            return True
+        link = f"https://t.me/{username}?start={token}"
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Подключить Сэма", url=link)]
+            ]
+        )
+        expiry = invitation.expires_at.astimezone(UTC).strftime("%d.%m %H:%M UTC")
+        await message.reply(
+            f"{target.first_name}, нажми кнопку — Сэм создаст отдельный профиль, "
+            f"подключит этот чат и разберёт исходное сообщение. Ссылка действует до {expiry}.",
+            reply_markup=keyboard,
+        )
+        return True
 
     async def _handle_callback(self, callback: CallbackQuery) -> None:
         """Turn an authenticated button click into a normal durable command."""
@@ -980,15 +1118,17 @@ class TelegramRuntime:
 
     async def _suppress_stale_reminder(self, session, item: Outbox) -> bool:
         """Check opt-in and the current session again immediately before send."""
-        preference = await session.get(TrainingPreference, item.athlete_id)
         athlete = await session.get(Athlete, item.athlete_id)
         # Group posts are optional sharing too. Do not deliver an already
         # queued reply after a user revokes group sharing.
         if item.telegram_chat_id < 0 and (
             athlete is None
             or not athlete.active
-            or preference is None
-            or preference.shared_chat_id != item.telegram_chat_id
+            or not await is_group_member(
+                session,
+                athlete_id=item.athlete_id,
+                telegram_chat_id=item.telegram_chat_id,
+            )
         ):
             item.status, item.error = "superseded", "group_sharing_revoked"
             return True

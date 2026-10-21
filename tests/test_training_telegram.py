@@ -3,19 +3,31 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from aiogram.enums import ChatType
 from sqlalchemy import func, select
 
 from app.db.models import (
     Athlete,
     CatalogSource,
     Correction,
+    Invitation,
     Message,
     Outbox,
     Plan,
     ProcessingRun,
+    SharedChat,
+    SharedChatMembership,
     Workout,
 )
-from app.membership import create_invitation, ensure_preference, redeem_invitation
+from app.membership import (
+    create_group_invitation,
+    create_invitation,
+    ensure_preference,
+    is_group_member,
+    redeem_invitation,
+    redeem_invitation_details,
+    revoke_group_access,
+)
 from app.prompts import PROMPT_VERSION
 from app.scheduling import enqueue_morning_plans
 from app.telegram import TelegramRuntime
@@ -88,6 +100,191 @@ async def test_invitation_is_one_time_expiring_and_private(database, settings):
                 chat_id=-100123,
                 now=datetime(2026, 9, 24, tzinfo=UTC),
             )
+
+
+@pytest.mark.asyncio
+async def test_reply_invite_registers_chat_is_target_bound_and_replays_after_consent(
+    database, settings
+):
+    now = datetime(2026, 10, 21, tzinfo=UTC)
+    async with database.sessions() as session:
+        alexey = await session.scalar(select(Athlete).where(Athlete.telegram_user_id == 101))
+        token, invitation = await create_group_invitation(
+            session,
+            created_by=alexey,
+            alexey_telegram_user_id=settings.alexey_telegram_user_id,
+            telegram_chat_id=-200456,
+            chat_title="Climbing buddies",
+            target_telegram_user_id=303,
+            pending_message={"telegram_payload": {"message_id": 7, "text": "Привет)"}},
+            now=now,
+        )
+        assert invitation.shared_chat_id == -200456
+        assert invitation.target_telegram_user_id == 303
+        assert (await session.get(SharedChat, -200456)).title == "Climbing buddies"
+        assert await is_group_member(
+            session, athlete_id=alexey.id, telegram_chat_id=-200456
+        )
+        await session.commit()
+
+    async with database.sessions() as session:
+        with pytest.raises(ValueError):
+            await redeem_invitation_details(
+                session,
+                token=token,
+                telegram_user_id=404,
+                display_name="Wrong person",
+                chat_id=404,
+                now=now,
+            )
+
+    async with database.sessions() as session:
+        result = await redeem_invitation_details(
+            session,
+            token=token,
+            telegram_user_id=303,
+            display_name="Dmitry Olshevsky",
+            chat_id=303,
+            now=now,
+        )
+        assert result.created is True
+        assert result.pending_message["telegram_payload"]["text"] == "Привет)"
+        assert await is_group_member(
+            session, athlete_id=result.athlete.id, telegram_chat_id=-200456
+        )
+        assert result.invitation.payload == {}
+        await session.commit()
+
+    async with database.sessions() as session:
+        stored = await session.get(Invitation, invitation.id)
+        membership = await session.get(
+            SharedChatMembership,
+            {"telegram_chat_id": -200456, "athlete_id": stored.redeemed_by},
+        )
+        # Telegram IDs and internal athlete IDs intentionally differ.
+        assert membership is None
+        invited = await session.scalar(select(Athlete).where(Athlete.telegram_user_id == 303))
+        assert await is_group_member(
+            session, athlete_id=invited.id, telegram_chat_id=-200456
+        )
+
+
+@pytest.mark.asyncio
+async def test_non_admin_cannot_register_a_group(database, settings):
+    async with database.sessions() as session:
+        andrey = await session.scalar(select(Athlete).where(Athlete.telegram_user_id == 202))
+        with pytest.raises(PermissionError):
+            await create_group_invitation(
+                session,
+                created_by=andrey,
+                alexey_telegram_user_id=settings.alexey_telegram_user_id,
+                telegram_chat_id=-200999,
+                chat_title="Unauthorized",
+                target_telegram_user_id=303,
+                pending_message={},
+                now=datetime(2026, 10, 21, tzinfo=UTC),
+            )
+        assert await session.get(SharedChat, -200999) is None
+
+
+@pytest.mark.asyncio
+async def test_existing_athlete_can_join_another_group_without_duplicate_profile(database, settings):
+    now = datetime(2026, 10, 21, tzinfo=UTC)
+    async with database.sessions() as session:
+        alexey = await session.scalar(select(Athlete).where(Athlete.telegram_user_id == 101))
+        before = await session.scalar(select(func.count()).select_from(Athlete))
+        token, _ = await create_group_invitation(
+            session,
+            created_by=alexey,
+            alexey_telegram_user_id=101,
+            telegram_chat_id=-200789,
+            chat_title="Second group",
+            target_telegram_user_id=202,
+            pending_message={},
+            now=now,
+        )
+        await session.commit()
+    async with database.sessions() as session:
+        result = await redeem_invitation_details(
+            session,
+            token=token,
+            telegram_user_id=202,
+            display_name="Andrey",
+            chat_id=202,
+            now=now,
+        )
+        assert result.created is False
+        assert await session.scalar(select(func.count()).select_from(Athlete)) == before
+        assert await is_group_member(
+            session, athlete_id=result.athlete.id, telegram_chat_id=-200789
+        )
+
+
+@pytest.mark.asyncio
+async def test_group_add_button_redeems_and_queues_the_replied_message(database, settings):
+    runtime = TelegramRuntime(settings, database, SimpleNamespace())
+    runtime._bot_username = "samclimbs_bot"
+    original_payload = {
+        "message_id": 777,
+        "date": 1792555140,
+        "chat": {"id": -200456, "type": "supergroup", "title": "Climbing buddies"},
+        "from": {"id": 303, "is_bot": False, "first_name": "Dmitry"},
+        "text": "Привет)",
+    }
+    target = SimpleNamespace(
+        from_user=SimpleNamespace(id=303, is_bot=False, first_name="Dmitry"),
+        model_dump=lambda **_: original_payload,
+    )
+    group_message = SimpleNamespace(
+        text="/add",
+        from_user=SimpleNamespace(id=101, is_bot=False, first_name="Alexey"),
+        chat=SimpleNamespace(
+            id=-200456, type=ChatType.SUPERGROUP, title="Climbing buddies"
+        ),
+        reply_to_message=target,
+        reply=AsyncMock(),
+    )
+    private_message = None
+    try:
+        assert await runtime._maybe_handle_group_add(group_message)
+        markup = group_message.reply.await_args.kwargs["reply_markup"]
+        link = markup.inline_keyboard[0][0].url
+        token = link.split("start=", 1)[1]
+        private_message = SimpleNamespace(
+            text=f"/start {token}",
+            from_user=SimpleNamespace(
+                id=303,
+                is_bot=False,
+                first_name="Dmitry",
+                full_name="Dmitry Olshevsky",
+            ),
+            chat=SimpleNamespace(id=303, type=ChatType.PRIVATE),
+            reply=AsyncMock(),
+        )
+        await runtime._handle_message(private_message)
+        assert "отдельный профиль" in private_message.reply.await_args.args[0]
+        assert "Исходное сообщение" in private_message.reply.await_args.args[0]
+        async with database.sessions() as session:
+            athlete = await session.scalar(
+                select(Athlete).where(Athlete.telegram_user_id == 303)
+            )
+            assert athlete is not None
+            assert await is_group_member(
+                session, athlete_id=athlete.id, telegram_chat_id=-200456
+            )
+            queued = await session.scalar(
+                select(Message).where(
+                    Message.telegram_chat_id == -200456,
+                    Message.telegram_message_id == 777,
+                )
+            )
+            assert queued is not None and queued.athlete_id == athlete.id
+            run = await session.scalar(
+                select(ProcessingRun).where(ProcessingRun.message_id == queued.id)
+            )
+            assert run.status == "received"
+    finally:
+        await runtime.bot.session.close()
 
 
 @pytest.mark.asyncio
@@ -224,6 +421,7 @@ async def test_group_revocation_blocks_ingestion_before_processing_run(database,
     async with database.sessions() as session:
         athlete = await session.scalar(select(Athlete).where(Athlete.telegram_user_id == 101))
         (await ensure_preference(session, athlete)).shared_chat_id = None
+        await revoke_group_access(session, athlete_id=athlete.id)
         await session.commit()
     runtime = TelegramRuntime(settings, database, SimpleNamespace())
     message = TelegramMessage.model_validate(
@@ -292,6 +490,7 @@ async def test_queued_group_delivery_is_suppressed_after_sharing_revocation(data
         athlete = await session.scalar(select(Athlete).where(Athlete.telegram_user_id == 101))
         preference = await ensure_preference(session, athlete)
         preference.shared_chat_id = None
+        await revoke_group_access(session, athlete_id=athlete.id)
         session.add(
             Outbox(
                 athlete_id=athlete.id,

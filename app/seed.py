@@ -19,6 +19,7 @@ from app.db.models import (
     WorkoutEntry,
 )
 from app.grades import grade_rank
+from app.membership import ensure_shared_chat, grant_group_access
 
 ALEXEY_PROFILE = {
     "identity": {"name": "Alexey"},
@@ -94,6 +95,29 @@ async def seed_initial_data(session: AsyncSession, settings: Settings) -> None:
                 )
             )
     alexey = athletes["Alexey"]
+    # Backward-compatible bridge from the former single shared_chat_id field
+    # into the multi-group membership tables. A NULL value remains an opt-out.
+    legacy_preferences = (
+        await session.scalars(
+            select(TrainingPreference).where(TrainingPreference.shared_chat_id.is_not(None))
+        )
+    ).all()
+    for preference in legacy_preferences:
+        member = await session.get(Athlete, preference.athlete_id)
+        if member is None or not member.active:
+            continue
+        await ensure_shared_chat(
+            session,
+            telegram_chat_id=preference.shared_chat_id,
+            title=None,
+            created_by=alexey,
+        )
+        await grant_group_access(
+            session,
+            athlete=member,
+            telegram_chat_id=preference.shared_chat_id,
+            role="admin" if member.id == alexey.id else "member",
+        )
     baseline = await session.scalar(
         select(Workout)
         .where(

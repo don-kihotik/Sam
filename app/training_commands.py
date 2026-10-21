@@ -18,7 +18,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.db.models import Athlete, CatalogSource, Correction, Plan
-from app.membership import create_invitation, ensure_preference
+from app.membership import (
+    create_invitation,
+    ensure_preference,
+    ensure_shared_chat,
+    grant_group_access,
+    revoke_group_access,
+)
 from app.planning import (
     begin_log,
     confirm_planned_session,
@@ -362,14 +368,26 @@ async def handle_training_command(
         if value == "on":
             if settings.telegram_allowed_chat_id is None:
                 return CommandResult("Общий чат не настроен; приватность не менялась.")
+            await ensure_shared_chat(
+                session,
+                telegram_chat_id=settings.telegram_allowed_chat_id,
+                title=None,
+                created_by=athlete,
+            )
+            await grant_group_access(
+                session,
+                athlete=athlete,
+                telegram_chat_id=settings.telegram_allowed_chat_id,
+            )
             preference.shared_chat_id = settings.telegram_allowed_chat_id
             return CommandResult(
                 "Ответы на твои вопросы в настроенной группе включены: их видят участники группы. "
                 "Сэм обсуждает только тренировки автора вопроса, не чужие записи. Личные заметки и фото остаются приватными."
             )
+        await revoke_group_access(session, athlete_id=athlete.id)
         preference.shared_chat_id = None
         return CommandResult(
-            "Общий доступ отключён. Новые данные остаются только в личном контексте."
+            "Ответы во всех общих чатах отключены. Новые данные остаются только в личном контексте."
         )
 
     if name == "catalog":

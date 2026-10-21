@@ -43,7 +43,7 @@ from app.db.models import (
     WorkoutEntry,
 )
 from app.grades import normalize_grade
-from app.membership import ensure_preference
+from app.membership import ensure_preference, is_group_member
 from app.memory import (
     ContextBuilder,
     is_history_audit_request,
@@ -253,9 +253,10 @@ class MessageProcessor:
         if athlete is None:
             return ProcessResult(ignored_unknown_user=True)
         preference = await ensure_preference(session, athlete)
-        if incoming.telegram_chat_id < 0 and (
-            incoming.telegram_chat_id != self.settings.telegram_allowed_chat_id
-            or preference.shared_chat_id != incoming.telegram_chat_id
+        if incoming.telegram_chat_id < 0 and not await is_group_member(
+            session,
+            athlete_id=athlete.id,
+            telegram_chat_id=incoming.telegram_chat_id,
         ):
             queued_run = await session.scalar(
                 select(ProcessingRun)
@@ -784,7 +785,7 @@ class MessageProcessor:
         source_text: str,
     ) -> list[dict[str, Any]]:
         changes = []
-        public = message.telegram_chat_id == self.settings.telegram_allowed_chat_id
+        public = message.telegram_chat_id < 0
         visibility = "group" if public else "private"
         if not extraction.is_banter:
             changes.extend(
@@ -1019,7 +1020,7 @@ class MessageProcessor:
         max_duration_minutes: int | None = None,
     ) -> Plan:
         source = await session.get(Message, source_message_id)
-        public = source and source.telegram_chat_id == self.settings.telegram_allowed_chat_id
+        public = bool(source and source.telegram_chat_id < 0)
         return await save_plan(
             session,
             athlete_id=athlete_id,

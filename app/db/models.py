@@ -345,6 +345,32 @@ class TrainingPreference(Base):
     log_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class SharedChat(Base):
+    __tablename__ = "shared_chats"
+
+    telegram_chat_id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=False
+    )
+    title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_by: Mapped[int] = mapped_column(ForeignKey("athletes.id"), index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SharedChatMembership(Base):
+    __tablename__ = "shared_chat_memberships"
+
+    telegram_chat_id: Mapped[int] = mapped_column(
+        ForeignKey("shared_chats.telegram_chat_id", ondelete="CASCADE"), primary_key=True
+    )
+    athlete_id: Mapped[int] = mapped_column(
+        ForeignKey("athletes.id", ondelete="CASCADE"), primary_key=True
+    )
+    role: Mapped[str] = mapped_column(String(20), default="member")
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Invitation(Base):
     __tablename__ = "invitations"
 
@@ -353,6 +379,11 @@ class Invitation(Base):
     created_by: Mapped[int] = mapped_column(ForeignKey("athletes.id"))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     redeemed_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    target_telegram_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    shared_chat_id: Mapped[int | None] = mapped_column(
+        ForeignKey("shared_chats.telegram_chat_id"), nullable=True
+    )
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
 class CatalogProtocol(Base):

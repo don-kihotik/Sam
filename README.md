@@ -199,6 +199,24 @@ docker compose exec postgres psql -U sam -d sam -c `
   "select name, telegram_user_id from athletes order by name;"
 ```
 
+### Add a friend and a new shared chat
+
+Add Sam to the Telegram group, then reply to the friend's existing message with:
+
+```text
+/add
+```
+
+Only the configured Alexey administrator can run this command. Sam registers that group and posts
+a target-bound `Подключить Сэма` deep-link button. The friend clicks it once and confirms `/start`
+in the private bot chat; Sam creates or reuses that person's separate athlete profile, grants access
+to exactly that group, clears the temporarily retained quoted payload, and queues the replied message
+for normal processing. No Telegram IDs, Fly secrets, copied tokens, or `/sharing on` command are
+needed. The button expires after seven days and cannot be redeemed by another Telegram account.
+
+Registered athletes may belong to multiple shared groups. `/sharing off` in a private chat revokes
+all group memberships without deleting private history.
+
 ### Structured training memory
 
 From Alexey:
@@ -288,6 +306,8 @@ select athlete_id, period_end, window_days, metrics from analytics_snapshots ord
 select id, target_kind, target_id, status, payload from corrections order by id desc;
 select id, type, status, title from backlog_items order by id desc;
 select id, status, extracted, mutations, error from processing_runs order by id desc;
+select telegram_chat_id, title, created_by, active from shared_chats;
+select telegram_chat_id, athlete_id, role, active from shared_chat_memberships;
 ```
 
 `DEBUG=true` enables application and SQL debug logging. It does not expose hidden model
