@@ -276,6 +276,7 @@ async def reconcile_batch(
     counts = Counter()
     screen_types = Counter()
     examples: dict[str, list[str]] = {}
+    covered_protocol_ids = {source.protocol_id for source in sources if source.protocol_id}
     linked = 0
     for position, source in enumerate(sources):
         extracted = source.extracted or {}
@@ -292,6 +293,7 @@ async def reconcile_batch(
         elif len(matches) == 1:
             status = "matched_existing"
             candidates = [{"protocol_id": matches[0].id, "score": 1.0}]
+            covered_protocol_ids.add(matches[0].id)
         elif len(matches) > 1:
             status = "conflict"
             candidates = [{"protocol_id": item.id, "score": 1.0} for item in matches]
@@ -358,6 +360,9 @@ async def reconcile_batch(
         "screen_types": dict(sorted(screen_types.items())),
         "classifications": dict(sorted(counts.items())),
         "examples": dict(sorted(examples.items())),
+        "catalog_protocols_total": len(protocols),
+        "catalog_protocols_covered": len(covered_protocol_ids),
+        "catalog_protocols_uncovered": len(protocols) - len(covered_protocol_ids),
         "exact_links_added": linked,
         "applied": apply,
     }
