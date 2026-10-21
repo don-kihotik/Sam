@@ -9,7 +9,7 @@ from sqlalchemy import desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.analytics import analytics_windows
-from app.catalog import catalog_context
+from app.catalog import catalog_selection
 from app.db.models import (
     Athlete,
     BacklogItem,
@@ -86,9 +86,15 @@ async def catalog_options(
         selected = {**profile, "session_location": location}
         if location:
             selected["locations"] = [location]
-        protocols = await catalog_context(session, profile=selected, limit=20)
-        if protocols:
-            choices.append({"only_at_location": location, "protocols": protocols})
+        selection = await catalog_selection(
+            session,
+            profile=selected,
+            selection_text=session_text,
+            limit=20,
+            blocked_limit=5,
+        )
+        if selection["protocols"] or selection["blocked_candidates"]:
+            choices.append({"only_at_location": location, **selection})
     return choices
 
 
@@ -639,7 +645,11 @@ class ContextBuilder:
             reference_date=today,
         )
         plans = await planning_context(session, athlete_id=athlete.id, today=today, public=public)
-        catalog = await catalog_options(session, profile)
+        catalog = await catalog_options(
+            session,
+            profile,
+            session_text=session_text if session_text is not None else current_message,
+        )
         sections = {
             "TODAY": f"{today.isoformat()} ({today:%A})",
             "AUDIENCE": "shared group; requesting athlete only"

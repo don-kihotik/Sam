@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -24,6 +25,26 @@ SAVE_FAILED = (
 
 _HEALTH_QUESTION = re.compile(r"симптом|самочувств|температур|слабост|выздоров|болеешь|недомоган|простуд|recovered|symptom", re.IGNORECASE)
 _FUTURE_QUESTION = re.compile(r"будет|будут|уйдут|пройдут|останется|к воскрес|к понедель|к трениров|will you", re.IGNORECASE)
+_DETAIL_REQUEST = re.compile(
+    r"подроб\w*|детальн\w*|распиш\w*|конкретн\w*\s+(?:трениров|занят)|"
+    r"detail(?:ed)?|step[- ]by[- ]step",
+    re.IGNORECASE,
+)
+_DOSE_UNITS = {
+    "duration": {"min", "minute", "minutes", "sec", "second", "seconds"},
+    "duration_minutes": {"min", "minute", "minutes"},
+    "minutes": {"min", "minute", "minutes"},
+    "rest_minutes": {"min", "minute", "minutes"},
+    "duration_seconds": {"sec", "second", "seconds"},
+    "seconds": {"sec", "second", "seconds"},
+    "rest_seconds": {"sec", "second", "seconds"},
+    "distance_m": {"m"},
+    "distance_km": {"km"},
+    # Sets/reps are already explicit counts; the schema/prompt intentionally
+    # represents them without a physical unit.
+    "sets": {"", "count"},
+    "reps": {"", "count"},
+}
 
 
 def requested_session_minutes(text: str) -> int | None:
@@ -43,9 +64,13 @@ def validate_planning_task_candidate(
         )
     if not task.ready:
         raise ValueError(
-            "Open planning task is missing its required frequency or venue. Ask one concise "
-            "follow-up question with plan.action=none instead of guessing a plan."
+            "Open planning task is missing a required planning input (goal, frequency or venue). "
+            "Ask one concise follow-up question with plan.action=none instead of guessing a plan."
         )
+    if task.requested_scope == "week" and task.parent_plan_id is not None:
+        if candidate.parent_plan_id not in {None, task.parent_plan_id}:
+            raise ValueError("Detailed week points at a different program parent")
+        candidate.parent_plan_id = task.parent_plan_id
     if task.requested_scope == "program" and "месяц" in task.root_request.casefold():
         errors: list[str] = []
         if candidate.start_date is None or candidate.end_date is None:
@@ -96,6 +121,93 @@ def validate_planning_task_candidate(
                 )
         if errors:
             raise ValueError("; ".join(errors))
+
+
+def _block_has_dose(block) -> bool:
+    if block.protocol_id is not None:
+        # The immutable catalog recipe supplies its dosage and rest.
+        return True
+    for parameter in block.parameters:
+        name = parameter.name.casefold().strip()
+        allowed_units = _DOSE_UNITS.get(name)
+        if allowed_units is None:
+            continue
+        value = parameter.value
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(value)
+            or value <= 0
+        ):
+            continue
+        unit = (parameter.unit or "").casefold().strip()
+        if unit in allowed_units:
+            return True
+    return False
+
+
+def validate_detailed_plan(candidate: PlanCandidate, *, required: bool) -> None:
+    """A detailed plan must be executable and produce a useful training log."""
+
+    if not required or candidate.action == "none" or candidate.scope == "program":
+        return
+    errors: list[str] = []
+    if candidate.scope == "session":
+        sessions = [
+            {
+                "date": candidate.start_date,
+                "title": candidate.title or candidate.summary,
+                "purpose": candidate.purpose or candidate.summary,
+                "intensity": candidate.intensity,
+                "rest_guidance": candidate.rest_guidance,
+                "blocks": candidate.blocks,
+                "stop_conditions": candidate.stop_conditions,
+                "logging_guidance": candidate.logging_guidance,
+            }
+        ]
+    else:
+        sessions = [
+            {
+                "date": item.date,
+                "title": item.title,
+                "purpose": item.purpose,
+                "intensity": item.intensity,
+                "rest_guidance": item.rest_guidance,
+                "blocks": item.blocks,
+                "stop_conditions": item.stop_conditions,
+                "logging_guidance": item.logging_guidance,
+            }
+            for item in candidate.sessions
+        ]
+        if not sessions:
+            errors.append("A detailed week needs dated sessions, not schedule labels only")
+    for index, item in enumerate(sessions, start=1):
+        prefix = f"Detailed session {index}"
+        if item["date"] is None:
+            errors.append(f"{prefix} needs an exact date")
+        if not item["title"]:
+            errors.append(f"{prefix} needs a descriptive title")
+        if not item["purpose"]:
+            errors.append(f"{prefix} needs a purpose tied to the athlete's goal")
+        if not item["blocks"]:
+            errors.append(f"{prefix} needs executable blocks")
+        if not item["intensity"]:
+            errors.append(f"{prefix} needs a relative, observable intensity target")
+        if not item["rest_guidance"]:
+            errors.append(f"{prefix} needs explicit work/rest guidance")
+        if not item["stop_conditions"]:
+            errors.append(f"{prefix} needs stop or load-reduction criteria")
+        if not item["logging_guidance"]:
+            errors.append(f"{prefix} needs specific post-session logging guidance")
+        for block_index, block in enumerate(item["blocks"], start=1):
+            if block.protocol_id is None and not (block.instruction or "").strip():
+                errors.append(f"{prefix} ad-hoc block {block_index} needs an instruction")
+            if not _block_has_dose(block):
+                errors.append(
+                    f"{prefix} block {block_index} needs dosage (time, sets/reps or distance)"
+                )
+    if errors:
+        raise ValueError("; ".join(errors))
 
 
 def useful_followup(question: str | None, pending_questions: list[str]) -> str | None:
@@ -196,6 +308,16 @@ async def generate_checked_reply(
             response = await ai.coach_reply(context=repair_context, safety_identifier=safety_identifier, repair=bool(attempt))
             candidate = align_session_plan(response.plan, intent, target)
             validate_planning_task_candidate(candidate, planning_task)
+            validate_detailed_plan(
+                candidate,
+                required=bool(
+                    _DETAIL_REQUEST.search(request_text)
+                    or (
+                        planning_task is not None
+                        and _DETAIL_REQUEST.search(planning_task.root_request)
+                    )
+                ),
+            )
             if (
                 planning_task
                 and planning_task.requested_scope == "program"

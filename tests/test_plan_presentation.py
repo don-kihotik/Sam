@@ -83,7 +83,7 @@ def test_compact_plan_is_human_readable_and_uses_effective_prescription_only():
     assert "#44" not in rendered and "версия 5" not in rendered
     assert "Оригинальный рецепт" not in rendered
     assert "Короткое окно восстановления" not in rendered
-    assert "1. 1 On 1 Off (каталог)" in rendered
+    assert "1. Интервалы: 1 мин лазания / 1 мин отдыха (каталог)" in rendered
     # Rendering is presentation-only; the immutable snapshot remains unchanged.
     assert plan.content["blocks"][0]["instruction"] == "Используй auto_belay или автобейл."
 
@@ -100,6 +100,141 @@ def test_detailed_markdown_keeps_identifiers_provenance_and_both_recipes():
     assert "Оригинальный рецепт источника:" in rendered
     assert "10 повторов" in rendered
     assert "автостраховка" in rendered
+
+
+def test_ready_route_endurance_cards_are_readable_in_russian_without_mutating_source():
+    source_titles = [
+        "1 On 1 Off",
+        "1 On 2 Off",
+        "Continuity 5x3",
+        "Aero 4's",
+        "50-50",
+        "Warm Up Protocol - Route Climbing",
+    ]
+    source_steps = [
+        "Easy route or circuit interval",
+        "Easy route or circuit interval",
+        "Continuous easy climbing",
+        "Easy route or circuit",
+        "30-move lap",
+        "Route warm-up",
+    ]
+    plan = Plan(
+        id=45,
+        athlete_id=1,
+        scope="session",
+        status="active",
+        visibility="private",
+        start_date=date(2026, 9, 24),
+        end_date=date(2026, 9, 24),
+        content={
+            "summary": "Аэробная работа на трассах",
+            "blocks": [
+                {
+                    "kind": "catalog_protocol",
+                    "protocol_id": index,
+                    "title": title,
+                    "parameters": [],
+                    "protocol_snapshot": {
+                        "slug": f"source-{index}",
+                        "version": 1,
+                        "specification": {
+                            "steps": [{"type": "action", "label": step}],
+                        },
+                    },
+                }
+                for index, (title, step) in enumerate(zip(source_titles, source_steps), start=1)
+            ],
+        },
+        evidence=[],
+        source_message_ids=[],
+    )
+
+    rendered = render_training_plan(plan)
+
+    assert "Интервалы: 1 мин лазания / 1 мин отдыха" in rendered
+    assert "Интервалы: 1 мин лазания / 2 мин отдыха" in rendered
+    assert "Непрерывное лёгкое лазание 5×3" in rendered
+    assert "Аэробные четвёрки" in rendered
+    assert "50/50: лёгкие и сложные движения" in rendered
+    assert "Разминка перед лазанием на трассах" in rendered
+    assert "Лёгкая трасса или круг" in rendered
+    assert "Круг из 30 движений" in rendered
+    assert plan.content["blocks"][0]["title"] == "1 On 1 Off"
+    assert plan.content["blocks"][4]["protocol_snapshot"]["specification"]["steps"][0][
+        "label"
+    ] == "30-move lap"
+
+
+def test_compact_plan_never_hides_untranslated_source_safety_restriction():
+    plan = Plan(
+        id=46,
+        athlete_id=1,
+        scope="session",
+        status="active",
+        visibility="private",
+        start_date=date(2026, 9, 24),
+        end_date=date(2026, 9, 24),
+        content={
+            "summary": "Безопасная проверка",
+            "blocks": [
+                {
+                    "kind": "catalog_protocol",
+                    "protocol_id": 99,
+                    "title": "Source protocol",
+                    "parameters": [],
+                    "protocol_snapshot": {
+                        "slug": "source-protocol",
+                        "version": 1,
+                        "specification": {
+                            "steps": [],
+                            "restrictions": [
+                                {
+                                    "kind": "safety",
+                                    "text": "Stop immediately if the shoulder becomes painful.",
+                                }
+                            ],
+                        },
+                    },
+                }
+            ],
+        },
+        evidence=[],
+        source_message_ids=[],
+    )
+
+    rendered = render_training_plan(plan)
+
+    assert "Важно: Stop immediately if the shoulder becomes painful." in rendered
+
+    week = Plan(
+        id=47,
+        athlete_id=1,
+        scope="week",
+        status="active",
+        visibility="private",
+        start_date=date(2026, 9, 24),
+        end_date=date(2026, 9, 30),
+        content={
+            "summary": "Безопасная неделя",
+            "sessions": [
+                {
+                    "id": 48,
+                    "date": "2026-09-24",
+                    "title": "Проверка ограничения",
+                    "blocks": plan.content["blocks"],
+                }
+            ],
+        },
+        evidence=[],
+        source_message_ids=[],
+    )
+    assert "Важно: Stop immediately if the shoulder becomes painful." in render_training_plan(
+        week
+    )
+    assert "Ограничение источника: Stop immediately if the shoulder becomes painful." in (
+        render_training_plan(week, detailed=True)
+    )
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@ from datetime import UTC, date, datetime
 from sqlalchemy import func, select
 
 from app.ai import FakeAIService
+from app.catalog import seed_catalog
 from app.db.models import (
     Athlete,
     CatalogProtocol,
@@ -195,6 +196,82 @@ async def test_catalog_context_keeps_venue_equipment_separate(database):
             item["only_at_location"]: {p["slug"] for p in item["protocols"]} for item in choices
         }
         assert by_location == {"home": {"mat"}, "gym": {"bar"}}
+
+
+async def test_catalog_options_exposes_ranked_nonselectable_grade_question(database):
+    async with database.sessions() as session:
+        await seed_catalog(session)
+        choices = await catalog_options(
+            session,
+            {
+                "equipment": ["auto_belay"],
+                "locations": ["climbing_gym"],
+                "goals": ["Выносливость для мультипитча"],
+            },
+            session_text="Подбери тренировку на выносливость",
+        )
+        assert len(choices) == 1
+        choice = choices[0]
+        assert choice["protocols"] == []
+        blocked = choice["blocked_candidates"]
+        assert blocked
+        assert blocked[0]["selectable"] is False
+        assert blocked[0]["missing_profile"] == ["flash_grade"]
+        assert "protocol_id" not in blocked[0]
+        assert choice["missing_profile_hints"][0] == {
+            "field": "flash_grade",
+            "reason": "required_by_relevant_ready_protocols",
+            "blocked_candidate_count": 4,
+            "top_candidate_slugs": ["1-on-1-off", "1-on-2-off", "aero-4s"],
+        }
+
+
+async def test_context_catalog_ranking_prefers_today_focus_over_durable_goal(database):
+    async with database.sessions() as session:
+        await seed_catalog(session)
+        athlete = await session.get(Athlete, 1)
+        preference = await session.get(TrainingPreference, athlete.id)
+        preference.profile = {
+            "goals": [
+                {
+                    "title": "Развивать аэробную выносливость",
+                    "visibility": "private",
+                }
+            ],
+            "locations": [
+                {"name": "climbing_gym", "visibility": "private"}
+            ],
+            "equipment": [
+                {
+                    "name": "bouldering wall",
+                    "available": True,
+                    "location": "climbing_gym",
+                    "visibility": "private",
+                }
+            ],
+            "experience": [
+                {
+                    "activity": "bouldering",
+                    "flash_grade": "V3",
+                    "visibility": "private",
+                }
+            ],
+        }
+        context = await ContextBuilder(group_chat_id=-100123).build(
+            session,
+            athlete=athlete,
+            today=date(2026, 9, 24),
+            current_message="Сегодня хочу занятие на технику ног",
+            semantic_matches=[],
+            extraction_summary="{}",
+            chat_id=athlete.telegram_user_id,
+        )
+        catalog_section = context.split(
+            "ELIGIBLE CATALOG PROTOCOLS (not completed workouts)", 1
+        )[1].split("DETERMINISTIC ANALYTICS", 1)[0]
+        assert catalog_section.index("Efficiency Training") < catalog_section.index(
+            "Drop Intervals"
+        )
 
 
 async def test_legacy_seed_scope_is_classified_without_resetting_preferences(database, settings):

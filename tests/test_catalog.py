@@ -3,7 +3,14 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import func, select
 
-from app.catalog import catalog_context, receive_catalog_source, seed_catalog, validate_blocks
+from app.catalog import (
+    _concepts,
+    catalog_context,
+    catalog_selection,
+    receive_catalog_source,
+    seed_catalog,
+    validate_blocks,
+)
 from app.db.models import CatalogProtocol, CatalogSource, Message, Workout
 
 
@@ -126,6 +133,119 @@ async def test_context_requires_explicit_equipment_and_level(database):
         assert "1 On 1 Off" in {entry["title"] for entry in from_experience}
 
 
+async def test_auto_belay_implies_only_its_route_wall_and_keeps_grade_gate(database):
+    async with database.sessions() as session:
+        await seed_catalog(session)
+        missing_grade = await catalog_selection(
+            session,
+            profile={
+                "equipment": ["auto-belay"],
+                "locations": ["climbing_gym"],
+                "goals": ["Build aerobic endurance for multipitch routes"],
+            },
+            limit=100,
+        )
+        assert "1-on-1-off" not in {item["slug"] for item in missing_grade["protocols"]}
+        blocked = {item["slug"]: item for item in missing_grade["blocked_candidates"]}
+        assert blocked["1-on-1-off"]["missing_profile"] == ["flash_grade"]
+        assert blocked["1-on-1-off"]["selectable"] is False
+        assert "protocol_id" not in blocked["1-on-1-off"]
+
+        eligible = await catalog_context(
+            session,
+            profile={
+                "equipment": ["autobelay"],
+                "locations": ["climbing_gym"],
+                "flash_grade": "6a",
+            },
+            limit=100,
+        )
+        slugs = {item["slug"] for item in eligible}
+        assert {"1-on-1-off", "1-on-2-off", "continuity-5x3", "aero-4s"} <= slugs
+
+        # The implication does not invent rope gear or a confirmed partner.
+        session.add(
+            CatalogProtocol(
+                slug="rope-and-partner-only",
+                version=1,
+                title="Rope and partner only",
+                category="climbing",
+                status="ready",
+                specification={
+                    "equipment": {"required_all": ["rope_belay"]},
+                    "eligibility": {"requires_partner": True},
+                },
+            )
+        )
+        await session.flush()
+        eligible = await catalog_context(
+            session,
+            profile={"equipment": ["auto_belay"], "flash_grade": "6a"},
+            limit=100,
+        )
+        assert "rope-and-partner-only" not in {item["slug"] for item in eligible}
+
+
+async def test_catalog_ranking_prefers_goal_relevant_endurance_cards(database):
+    async with database.sessions() as session:
+        await seed_catalog(session)
+        protocols = await catalog_context(
+            session,
+            profile={
+                "equipment": [
+                    "auto_belay",
+                    "bouldering wall",
+                    "exercise mat",
+                    "slab wall",
+                ],
+                "locations": ["climbing_gym"],
+                "flash_grade": "6a",
+                "onsight_grade": "5c",
+                "goals": [
+                    {"title": "Выносливость для лидирования участков мультипитча"}
+                ],
+            },
+            limit=100,
+        )
+        first_five = [item["slug"] for item in protocols[:5]]
+        assert set(first_five) <= {
+            "1-on-1-off",
+            "1-on-2-off",
+            "50-50",
+            "aero-4s",
+            "continuity-5x3",
+        }
+        # Repeated selection is stable rather than database/alphabetical accident.
+        repeated = await catalog_context(
+            session,
+            profile={
+                "equipment": ["auto_belay", "exercise mat"],
+                "flash_grade": "6a",
+                "goals": ["aerobic endurance"],
+            },
+            limit=100,
+        )
+        repeated_again = await catalog_context(
+            session,
+            profile={
+                "equipment": ["auto_belay", "exercise mat"],
+                "flash_grade": "6a",
+                "goals": ["aerobic endurance"],
+            },
+            limit=100,
+        )
+        assert [item["slug"] for item in repeated] == [item["slug"] for item in repeated_again]
+        assert repeated[0]["category"] == "climbing"
+
+
+def test_catalog_concepts_use_word_aware_russian_stems():
+    assert "core" not in _concepts("Короткая тренировка")
+    assert "technique" not in _concepts("Хочу немного полазать")
+    assert "core" in _concepts("Укрепить кор и корпус")
+    assert "technique" in _concepts("Техника ног и экономичные движения")
+    assert "endurance" in _concepts("Развивать выносливость для мультипитча")
+
+
 async def test_context_does_not_combine_location_bound_equipment(database):
     async with database.sessions() as session:
         await seed_catalog(session)
@@ -141,6 +261,31 @@ async def test_context_does_not_combine_location_bound_equipment(database):
         profile["session_location"] = "gym-a"
         gym_a = await catalog_context(session, profile=profile)
         assert "1 On 1 Off" not in {entry["title"] for entry in gym_a}
+        profile["session_location"] = "gym-b"
+        gym_b = await catalog_context(session, profile=profile)
+        assert "1 On 1 Off" in {entry["title"] for entry in gym_b}
+
+
+async def test_explicit_route_wall_unavailability_blocks_auto_belay_implication(database):
+    async with database.sessions() as session:
+        await seed_catalog(session)
+        protocols = await catalog_context(
+            session,
+            profile={
+                "session_location": "gym-a",
+                "flash_grade": "6a",
+                "equipment": [
+                    {"name": "auto_belay", "available": True, "location": "gym-a"},
+                    {
+                        "name": "route or circuit wall",
+                        "available": False,
+                        "location": "gym-a",
+                    },
+                ],
+            },
+            limit=100,
+        )
+        assert "1-on-1-off" not in {item["slug"] for item in protocols}
 
 
 async def test_validate_blocks_freezes_snapshot_and_rejects_unsafe_changes(database):

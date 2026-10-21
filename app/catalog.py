@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,82 @@ from app.db.models import CatalogProtocol, CatalogSource
 
 _DATA_PATH = Path(__file__).with_name("catalog_data.json")
 _PUBLIC_STATUSES = {"ready"}
+_EQUIPMENT_ALIASES = {
+    "auto belay": "auto_belay",
+    "auto-belay": "auto_belay",
+    "autobelay": "auto_belay",
+    "auto_belay": "auto_belay",
+    "route wall": "route or circuit wall",
+    "route/circuit wall": "route or circuit wall",
+    "route or circuit wall": "route or circuit wall",
+}
+_SELECTION_PROFILE_FIELDS = (
+    "goals",
+    "goal",
+    "objectives",
+    "objective",
+    "focus",
+    "purpose",
+    "session_goal",
+    "program_goal",
+    "program",
+)
+_CONCEPT_KEYWORDS = {
+    "endurance": (
+        "endurance",
+        "aerobic",
+        "stamina",
+        "volume",
+        "multipitch",
+        "multi-pitch",
+        "вынослив",
+        "аэроб",
+        "объем",
+        "объём",
+        "мультипитч",
+    ),
+    "power_endurance": (
+        "power endurance",
+        "anaerobic capacity",
+        "мощностная выносливость",
+        "мощностн",
+    ),
+    "technique": (
+        "technique",
+        "movement",
+        "footwork",
+        "efficiency",
+        "техник",
+        "движен",
+        "ног",
+        "экономич",
+    ),
+    "route": ("route", "lead", "rope", "sport climb", "трасс", "лидирован", "верев"),
+    "bouldering": ("boulder", "боулдер", "болдер"),
+    "strength": ("strength", "силов", "сила"),
+    "core": ("core", "body tension", "кор", "пресс", "корпус"),
+    "warmup": ("warmup", "warm-up", "размин"),
+    "recovery": ("recovery", "regeneration", "восстанов"),
+}
+_CONCEPT_PREFIX_KEYWORDS = {
+    "вынослив",
+    "аэроб",
+    "мультипитч",
+    "мощностн",
+    "техник",
+    "движен",
+    "ног",
+    "экономич",
+    "трасс",
+    "лидирован",
+    "верев",
+    "боулдер",
+    "болдер",
+    "силов",
+    "размин",
+    "восстанов",
+    "корпус",
+}
 _SAM_VOLUME_ADAPTATIONS = {
     "1-on-1-off": ("reps", "sam_volume_reps"),
     "1-on-2-off": ("reps", "sam_volume_reps"),
@@ -178,6 +255,11 @@ def _as_strings(value: Any) -> set[str]:
     return set()
 
 
+def _canonical_equipment(values: Iterable[str]) -> set[str]:
+    """Normalize only known equipment aliases; do not infer arbitrary gear."""
+    return {_EQUIPMENT_ALIASES.get(value, value) for value in values}
+
+
 def _profile_values(profile: Mapping[str, Any], key: str) -> set[str]:
     value = profile.get(key)
     if key != "equipment":
@@ -202,20 +284,34 @@ def _available_equipment(profile: Mapping[str, Any]) -> set[str]:
     """Read affirmed gear without combining location-specific inventories."""
     equipment = profile.get("equipment")
     if not isinstance(equipment, list) or not any(isinstance(item, Mapping) for item in equipment):
-        return _as_strings(equipment)
+        result = _canonical_equipment(_as_strings(equipment))
+        if "auto_belay" in result:
+            # An installed auto-belay necessarily hangs on a route wall.  This
+            # implication is intentionally one-way and grants no rope/partner gear.
+            result.add("route or circuit wall")
+        return result
     selected = _profile_values(profile, "session_location")
     if len(selected) > 1:
         return set()
     result: set[str] = set()
+    explicitly_unavailable: set[str] = set()
     for item in equipment:
-        if not isinstance(item, Mapping) or item.get("available") is not True:
+        if not isinstance(item, Mapping):
             continue
         item_locations = _as_strings(item.get("location") or item.get("locations"))
         # Global equipment is usable anywhere.  Location-bound equipment is
         # usable only when the intended session location is explicitly selected.
         if item_locations and (not selected or not item_locations.intersection(selected)):
             continue
-        result.update(_as_strings(item.get("name") or item.get("id") or item.get("value")))
+        names = _canonical_equipment(
+            _as_strings(item.get("name") or item.get("id") or item.get("value"))
+        )
+        if item.get("available") is True:
+            result.update(names)
+        elif item.get("available") is False:
+            explicitly_unavailable.update(names)
+    if "auto_belay" in result and "route or circuit wall" not in explicitly_unavailable:
+        result.add("route or circuit wall")
     return result
 
 
@@ -233,17 +329,47 @@ def _partner_known_available(profile: Mapping[str, Any]) -> bool:
     return bool(profile.get("partner_available") is True)
 
 
-def _is_applicable(spec: Mapping[str, Any], profile: Mapping[str, Any]) -> bool:
+def _profile_requirement_value(profile: Mapping[str, Any], field: Any) -> Any:
+    if not isinstance(field, str):
+        return None
+    value = profile.get(field)
+    if value in (None, "", [], {}, "unknown") and field in {"flash_grade", "onsight_grade"}:
+        for experience in profile.get("experience", []):
+            if not isinstance(experience, Mapping):
+                continue
+            # These are explicit grade fields in TrainingProfileCandidate; a
+            # generic activity level never becomes a grade by inference.
+            value = experience.get(field)
+            if value not in (None, "", "unknown"):
+                break
+            if experience.get("activity") == field:
+                value = experience.get("level")
+                if value not in (None, "", "unknown"):
+                    break
+    return value
+
+
+def _applicability(spec: Mapping[str, Any], profile: Mapping[str, Any]) -> dict[str, Any]:
+    """Return eligibility plus safe, explicit reasons for a blocked card."""
+    result: dict[str, Any] = {
+        "eligible": False,
+        "missing_equipment": [],
+        "missing_equipment_any": [],
+        "missing_profile": [],
+        "requires_partner": False,
+        "failed_requirements": [],
+        "location_conflict": False,
+    }
     equipment = spec.get("equipment", {})
     if not isinstance(equipment, Mapping):
-        return False
+        result["invalid_specification"] = True
+        return result
     available = _available_equipment(profile)
-    required_all = _as_strings(equipment.get("required_all"))
-    required_any = _as_strings(equipment.get("required_any"))
-    if not required_all.issubset(available):
-        return False
+    required_all = _canonical_equipment(_as_strings(equipment.get("required_all")))
+    required_any = _canonical_equipment(_as_strings(equipment.get("required_any")))
+    result["missing_equipment"] = sorted(required_all - available)
     if required_any and not required_any.intersection(available):
-        return False
+        result["missing_equipment_any"] = sorted(required_any)
 
     location = spec.get("location", {})
     allowed_locations = _as_strings(
@@ -257,39 +383,47 @@ def _is_applicable(spec: Mapping[str, Any], profile: Mapping[str, Any]) -> bool:
         and stated_locations
         and not allowed_locations.intersection(stated_locations)
     ):
-        return False
+        result["location_conflict"] = True
 
     eligibility = spec.get("eligibility", {})
     if not isinstance(eligibility, Mapping):
-        return False
+        result["invalid_specification"] = True
+        return result
     for field in eligibility.get("required_profile", []):
-        value = profile.get(field)
-        if value in (None, "", [], {}, "unknown") and field in {"flash_grade", "onsight_grade"}:
-            for experience in profile.get("experience", []):
-                if not isinstance(experience, Mapping):
-                    continue
-                # These are explicit grade fields in TrainingProfileCandidate;
-                # a generic activity level never becomes a grade by inference.
-                value = experience.get(field)
-                if value not in (None, "", "unknown"):
-                    break
-                if experience.get("activity") == field:
-                    value = experience.get("level")
-                    if value not in (None, "", "unknown"):
-                        break
+        value = _profile_requirement_value(profile, field)
         if value in (None, "", [], {}, "unknown"):
-            return False
+            result["missing_profile"].append(field)
     if eligibility.get("requires_partner") and not _partner_known_available(profile):
-        return False
+        result["requires_partner"] = True
     for requirement in eligibility.get("requirements", []):
         if not isinstance(requirement, Mapping):
-            return False
-        value = profile.get(requirement.get("field"))
+            result["invalid_specification"] = True
+            continue
+        value = _profile_requirement_value(profile, requirement.get("field"))
         if value in (None, "", [], {}, "unknown"):
-            return False
-        if "equals" in requirement and value != requirement["equals"]:
-            return False
-    return True
+            result["failed_requirements"].append(
+                {"field": requirement.get("field"), "reason": "missing"}
+            )
+        elif "equals" in requirement and value != requirement["equals"]:
+            result["failed_requirements"].append(
+                {"field": requirement.get("field"), "reason": "does_not_match"}
+            )
+    result["eligible"] = not any(
+        (
+            result["missing_equipment"],
+            result["missing_equipment_any"],
+            result["missing_profile"],
+            result["requires_partner"],
+            result["failed_requirements"],
+            result["location_conflict"],
+            result.get("invalid_specification"),
+        )
+    )
+    return result
+
+
+def _is_applicable(spec: Mapping[str, Any], profile: Mapping[str, Any]) -> bool:
+    return bool(_applicability(spec, profile)["eligible"])
 
 
 def _public_protocol(row: CatalogProtocol) -> dict[str, Any]:
@@ -305,16 +439,163 @@ def _public_protocol(row: CatalogProtocol) -> dict[str, Any]:
     }
 
 
-async def catalog_context(
-    session: AsyncSession, *, profile: dict[str, Any], limit: int = 20
-) -> list[dict[str, Any]]:
-    """Return ready, applicable source protocols in a stable order.
+def _text_fragments(value: Any) -> list[str]:
+    if value is None or isinstance(value, bool):
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, Mapping):
+        result: list[str] = []
+        for key, item in value.items():
+            if key == "evidence":
+                continue
+            result.extend(_text_fragments(item))
+        return result
+    if isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray)):
+        result = []
+        for item in value:
+            result.extend(_text_fragments(item))
+        return result
+    return [str(value)]
 
-    Specs intentionally contain no private intake identifiers, OCR, raw source
-    text, user examples, logged workouts, or athlete data.
+
+def _selection_query(profile: Mapping[str, Any], selection_text: Any = None) -> tuple[str, str]:
+    current = " ".join(_text_fragments(selection_text)).casefold()
+    profile_fragments: list[str] = []
+    for field in _SELECTION_PROFILE_FIELDS:
+        profile_fragments.extend(_text_fragments(profile.get(field)))
+    return current, " ".join(profile_fragments).casefold()
+
+
+def _tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[^\W_]+(?:-[^\W_]+)?", text.casefold(), flags=re.UNICODE)
+        if len(token) > 2
+    }
+
+
+def _concepts(text: str) -> set[str]:
+    folded = text.casefold()
+    tokens = _tokens(folded)
+
+    def matches(keyword: str) -> bool:
+        if keyword in _CONCEPT_PREFIX_KEYWORDS:
+            return any(token.startswith(keyword) for token in tokens)
+        if " " in keyword:
+            return bool(re.search(rf"(?<!\w){re.escape(keyword)}(?!\w)", folded))
+        return keyword in tokens
+
+    return {
+        concept
+        for concept, keywords in _CONCEPT_KEYWORDS.items()
+        if any(matches(keyword) for keyword in keywords)
+    }
+
+
+def _protocol_search_text(row: CatalogProtocol) -> tuple[str, str, str]:
+    spec = row.specification
+    purpose = " ".join(_text_fragments(spec.get("purpose")))
+    taxonomy = " ".join(
+        _text_fragments(
+            [
+                row.category,
+                spec.get("original_category"),
+                spec.get("original_subcategory"),
+            ]
+        )
+    )
+    descriptive = " ".join(
+        _text_fragments([row.title, purpose, taxonomy, spec.get("effects")])
+    )
+    return purpose.casefold(), taxonomy.casefold(), descriptive.casefold()
+
+
+def _text_relevance_score(row: CatalogProtocol, query: str) -> int:
+    if not query:
+        return 0
+    purpose, taxonomy, descriptive = _protocol_search_text(row)
+    query_tokens = _tokens(query)
+    score = 0
+    score += 8 * len(query_tokens.intersection(_tokens(purpose)))
+    score += 5 * len(query_tokens.intersection(_tokens(taxonomy)))
+    score += 2 * len(query_tokens.intersection(_tokens(descriptive)))
+    query_concepts = _concepts(query)
+    protocol_concepts = _concepts(descriptive)
+    score += 20 * len(query_concepts.intersection(protocol_concepts))
+    # A declared protocol taxonomy is stronger evidence than an incidental
+    # matching word in an effect (for example "movement quality" in an
+    # endurance card should not beat a technique card for a technique request).
+    score += 10 * len(query_concepts.intersection(_concepts(taxonomy)))
+    if "endurance" in query_concepts and row.category.casefold() == "climbing":
+        score += 5
+    return score
+
+
+def _relevance_score(row: CatalogProtocol, query: tuple[str, str]) -> tuple[int, int]:
+    """Score a card by explicit user/program intent, never by eligibility shortcuts."""
+    current_request, durable_profile = query
+    # Compare today's explicit focus first rather than blending it into the
+    # durable goal. The durable profile breaks ties and guides an underspecified
+    # request, but cannot outvote a more relevant current-session match.
+    return (
+        _text_relevance_score(row, current_request),
+        _text_relevance_score(row, durable_profile),
+    )
+
+
+def _ranked_rows(
+    rows: Iterable[CatalogProtocol], query: tuple[str, str]
+) -> list[CatalogProtocol]:
+    def key(row: CatalogProtocol) -> tuple[Any, ...]:
+        current_score, profile_score = _relevance_score(row, query)
+        return (
+            -current_score,
+            -profile_score,
+            row.category.casefold(),
+            row.title.casefold(),
+            -row.version,
+            row.slug,
+        )
+
+    return sorted(
+        rows,
+        key=key,
+    )
+
+
+def _blocked_candidate(row: CatalogProtocol, assessment: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a non-selectable hint: IDs and executable source steps stay absent."""
+    spec = row.specification
+    return {
+        "slug": row.slug,
+        "title": row.title,
+        "category": row.category,
+        "purpose": copy.deepcopy(spec.get("purpose", [])),
+        "selectable": False,
+        "missing_profile": list(assessment.get("missing_profile", [])),
+        "requires_partner": bool(assessment.get("requires_partner")),
+        "failed_requirements": copy.deepcopy(assessment.get("failed_requirements", [])),
+    }
+
+
+async def catalog_selection(
+    session: AsyncSession,
+    *,
+    profile: dict[str, Any],
+    selection_text: Any = None,
+    limit: int = 20,
+    blocked_limit: int = 5,
+) -> dict[str, Any]:
+    """Return ranked selectable cards and non-selectable baseline prompts.
+
+    A blocked candidate is shown only when its equipment and venue are already
+    compatible and a profile fact (grade/partner/declared requirement) is the
+    remaining gate.  This prevents the coach from treating unavailable gear as
+    a questionnaire while still surfacing the highest-value missing baseline.
     """
-    if limit < 0:
-        raise ValueError("limit must not be negative")
+    if limit < 0 or blocked_limit < 0:
+        raise ValueError("limits must not be negative")
     rows = (
         await session.scalars(
             select(CatalogProtocol).order_by(CatalogProtocol.slug, CatalogProtocol.version.desc())
@@ -323,16 +604,92 @@ async def catalog_context(
     latest: dict[str, CatalogProtocol] = {}
     for row in rows:
         latest.setdefault(row.slug, row)
-    # Do not fall back to a previous ready version when the latest source is
-    # draft/unready.  The latest row is the authoritative immutable source.
-    result = [
-        _public_protocol(row)
-        for row in sorted(
-            latest.values(), key=lambda item: (item.category, item.title, item.version)
+    ready = [row for row in latest.values() if row.status in _PUBLIC_STATUSES]
+    query = _selection_query(profile, selection_text)
+    eligible: list[CatalogProtocol] = []
+    blocked: list[tuple[CatalogProtocol, dict[str, Any]]] = []
+    for row in ready:
+        assessment = _applicability(row.specification, profile)
+        if assessment["eligible"]:
+            eligible.append(row)
+            continue
+        equipment_or_venue_block = bool(
+            assessment["missing_equipment"]
+            or assessment["missing_equipment_any"]
+            or assessment["location_conflict"]
+            or assessment.get("invalid_specification")
         )
-        if row.status in _PUBLIC_STATUSES and _is_applicable(row.specification, profile)
+        has_promptable_gate = bool(
+            assessment["missing_profile"]
+            or assessment["requires_partner"]
+            or assessment["failed_requirements"]
+        )
+        if not equipment_or_venue_block and has_promptable_gate:
+            blocked.append((row, assessment))
+    def blocked_key(item: tuple[CatalogProtocol, dict[str, Any]]) -> tuple[Any, ...]:
+        current_score, profile_score = _relevance_score(item[0], query)
+        return (
+            -current_score,
+            -profile_score,
+            item[0].category.casefold(),
+            item[0].title.casefold(),
+            item[0].slug,
+        )
+
+    ranked_blocked = sorted(blocked, key=blocked_key)
+    blocked_cards = [
+        _blocked_candidate(row, assessment)
+        for row, assessment in ranked_blocked[:blocked_limit]
     ]
-    return result[:limit]
+    missing_profile_hints: list[dict[str, Any]] = []
+    hinted_fields: set[str] = set()
+    for card in blocked_cards:
+        for field in card["missing_profile"]:
+            if not isinstance(field, str) or field in hinted_fields:
+                continue
+            hinted_fields.add(field)
+            affected = [
+                candidate["slug"]
+                for candidate in blocked_cards
+                if field in candidate["missing_profile"]
+            ]
+            missing_profile_hints.append(
+                {
+                    "field": field,
+                    "reason": "required_by_relevant_ready_protocols",
+                    "blocked_candidate_count": len(affected),
+                    "top_candidate_slugs": affected[:3],
+                }
+            )
+    return {
+        "protocols": [
+            _public_protocol(row) for row in _ranked_rows(eligible, query)[:limit]
+        ],
+        "blocked_candidates": blocked_cards,
+        "missing_profile_hints": missing_profile_hints,
+    }
+
+
+async def catalog_context(
+    session: AsyncSession,
+    *,
+    profile: dict[str, Any],
+    limit: int = 20,
+    selection_text: Any = None,
+) -> list[dict[str, Any]]:
+    """Return ready, applicable source protocols in relevance order.
+
+    Specs intentionally contain no private intake identifiers, OCR, raw source
+    text, user examples, logged workouts, or athlete data.
+    """
+    selection = await catalog_selection(
+        session,
+        profile=profile,
+        selection_text=selection_text,
+        limit=limit,
+        blocked_limit=0,
+    )
+    return selection["protocols"]
 
 
 def _parameter_list(value: Any) -> list[dict[str, Any]]:

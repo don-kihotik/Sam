@@ -158,9 +158,15 @@ class PlannedBlockCandidate(BaseModel):
 
 class PlannedSessionCandidate(BaseModel):
     date: DateType | None = None
+    day: str | None = None
     title: str | None = None
+    purpose: str | None = None
     location: str | None = None
+    intensity: str | None = None
+    rest_guidance: str | None = None
     blocks: list[PlannedBlockCandidate] = Field(default_factory=list)
+    stop_conditions: list[str] = Field(default_factory=list)
+    logging_guidance: list[str] = Field(default_factory=list)
     notes: str | None = None
 
 
@@ -188,7 +194,10 @@ class PlanCandidate(BaseModel):
     end_date: DateType | None = None
     title: str | None = None
     summary: str | None = None
+    purpose: str | None = None
     notes: str | None = None
+    intensity: str | None = None
+    rest_guidance: str | None = None
     focus: list[str] = Field(default_factory=list)
     # Structured Outputs does not support arbitrary-key dictionaries.  A list of
     # fixed-shape objects produces a strict JSON schema accepted by the API.
@@ -197,6 +206,8 @@ class PlanCandidate(BaseModel):
     phases: list[PlanPhaseCandidate] = Field(default_factory=list)
     sessions: list[PlannedSessionCandidate] = Field(default_factory=list)
     blocks: list[PlannedBlockCandidate] = Field(default_factory=list)
+    stop_conditions: list[str] = Field(default_factory=list)
+    logging_guidance: list[str] = Field(default_factory=list)
     adaptation_reason: str | None = None
     guardrails: list[str] = Field(default_factory=list)
     evidence: list[str] = Field(default_factory=list)
@@ -231,8 +242,13 @@ class PlanCandidate(BaseModel):
         self.location = self.location or nested.location
         self.title = self.title or nested.title
         self.summary = self.summary or nested.title
+        self.purpose = self.purpose or nested.purpose
         self.notes = self.notes or nested.notes
+        self.intensity = self.intensity or nested.intensity
+        self.rest_guidance = self.rest_guidance or nested.rest_guidance
         self.blocks = nested.blocks
+        self.stop_conditions = self.stop_conditions or nested.stop_conditions
+        self.logging_guidance = self.logging_guidance or nested.logging_guidance
         self.sessions = []
         return self
 

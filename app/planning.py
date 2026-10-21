@@ -33,11 +33,17 @@ _DAY_OFFSETS = {
     "saturday": 5,
     "sunday": 6,
     "понедельник": 0,
+    "понедельника": 0,
     "вторник": 1,
+    "вторника": 1,
     "среда": 2,
+    "среду": 2,
     "четверг": 3,
+    "четверга": 3,
     "пятница": 4,
+    "пятницу": 4,
     "суббота": 5,
+    "субботу": 5,
     "воскресенье": 6,
     "mon": 0,
     "tue": 1,
@@ -71,6 +77,36 @@ def _week_day(start: date, label: str) -> date:
     return start + timedelta(days=(offset - start.weekday()) % 7)
 
 
+_WEEKDAY_MENTIONS = (
+    (0, re.compile(r"\b(?:monday|понедельник\w*)\b", re.IGNORECASE)),
+    (1, re.compile(r"\b(?:tuesday|вторник\w*)\b", re.IGNORECASE)),
+    (2, re.compile(r"\b(?:wednesday|сред(?:а|у|ы|е))\b", re.IGNORECASE)),
+    (3, re.compile(r"\b(?:thursday|четверг\w*)\b", re.IGNORECASE)),
+    (4, re.compile(r"\b(?:friday|пятниц\w*)\b", re.IGNORECASE)),
+    (5, re.compile(r"\b(?:saturday|суббот\w*)\b", re.IGNORECASE)),
+    (6, re.compile(r"\b(?:sunday|воскресень\w*)\b", re.IGNORECASE)),
+)
+
+
+def _validate_session_weekday(item: PlannedSessionCandidate, session_day: date) -> None:
+    """Reject a human weekday label that contradicts the saved calendar date."""
+
+    if item.day is not None:
+        offset = _DAY_OFFSETS.get(item.day.strip().casefold())
+        if offset is None:
+            raise ValueError(f"unknown session weekday: {item.day}")
+        if offset != session_day.weekday():
+            raise ValueError(
+                f"session weekday {item.day} conflicts with date {session_day.isoformat()}"
+            )
+    label = " ".join(filter(None, (item.title, item.notes)))
+    mentioned = {weekday for weekday, pattern in _WEEKDAY_MENTIONS if pattern.search(label)}
+    if mentioned and mentioned != {session_day.weekday()}:
+        raise ValueError(
+            f"session title/notes weekday conflicts with date {session_day.isoformat()}"
+        )
+
+
 def _is_rest_label(value: str | None) -> bool:
     label = (value or "").casefold()
     return any(word in label for word in ("rest", "recovery day", "отдых", "выходной"))
@@ -81,6 +117,12 @@ _DISPLAY_ALIASES = (
     # not a rewrite of the immutable English source snapshot.
     (re.compile(r"\bWarm Up Protocol - Bouldering\b", re.IGNORECASE), "Разминка перед боулдерингом"),
     (re.compile(r"\bDrop Intervals\b", re.IGNORECASE), "Интервалы со снижением сложности"),
+    (re.compile(r"\b1 On 1 Off\b", re.IGNORECASE), "Интервалы: 1 мин лазания / 1 мин отдыха"),
+    (re.compile(r"\b1 On 2 Off\b", re.IGNORECASE), "Интервалы: 1 мин лазания / 2 мин отдыха"),
+    (re.compile(r"\bContinuity 5x3\b", re.IGNORECASE), "Непрерывное лёгкое лазание 5×3"),
+    (re.compile(r"\bAero 4's\b", re.IGNORECASE), "Аэробные четвёрки"),
+    (re.compile(r"\b50-50\b", re.IGNORECASE), "50/50: лёгкие и сложные движения"),
+    (re.compile(r"\bWarm Up Protocol - Route Climbing\b", re.IGNORECASE), "Разминка перед лазанием на трассах"),
     (re.compile(r"\bFive-stage bouldering warm-up\b", re.IGNORECASE), "Пятиэтапная разминка для боулдеринга"),
     (re.compile(r"\bCardiovascular warm-up\b", re.IGNORECASE), "Кардио-разминка"),
     (re.compile(r"\bMobility\b", re.IGNORECASE), "Мобилизация"),
@@ -90,6 +132,20 @@ _DISPLAY_ALIASES = (
     (re.compile(r"\bSix-boulder drop\b", re.IGNORECASE), "Серия из шести боулдеров"),
     (re.compile(r"\bHardest of six nearby boulders\b", re.IGNORECASE), "Самый сложный из шести близких боулдеров"),
     (re.compile(r"\bProgress through five easier boulders with minimal rest\b", re.IGNORECASE), "Пройди ещё пять более лёгких боулдеров с минимальным отдыхом"),
+    (re.compile(r"\bEasy route or circuit interval\b", re.IGNORECASE), "Лёгкая трасса или круг"),
+    (re.compile(r"\b30-move lap\b", re.IGNORECASE), "Круг из 30 движений"),
+    (re.compile(r"\bEasy section\b", re.IGNORECASE), "Лёгкая половина"),
+    (re.compile(r"\bHarder section\b", re.IGNORECASE), "Более сложная половина"),
+    (re.compile(r"\bEasy route or circuit\b", re.IGNORECASE), "Лёгкая трасса или круг"),
+    (re.compile(r"\bContinuous easy climbing\b", re.IGNORECASE), "Непрерывное лёгкое лазание"),
+    (re.compile(r"\bRoute warm-up\b", re.IGNORECASE), "Разминка перед трассами"),
+    (re.compile(r"\bCardio warm-up\b", re.IGNORECASE), "Кардио-разминка"),
+    (re.compile(r"\bArm swings\b", re.IGNORECASE), "Махи и круги руками"),
+    (re.compile(r"\bSingle-leg RDL\b", re.IGNORECASE), "Румынская тяга на одной ноге"),
+    (re.compile(r"\bSide lunges\b", re.IGNORECASE), "Боковые выпады"),
+    (re.compile(r"\bStanding IYT\b", re.IGNORECASE), "IYT стоя"),
+    (re.compile(r"\bPlank twists\b", re.IGNORECASE), "Скручивания в планке"),
+    (re.compile(r"\bEasy route climbing\b", re.IGNORECASE), "Лёгкое лазание по трассам"),
     (re.compile(r"\bChoose a cardio exercise\.?") , "Выбери кардио-упражнение."),
     (re.compile(r"\bArm swings, single-leg RDL, side lunges, IYT and plank twists\.?") , "Махи руками, румынская тяга на одной ноге, боковые выпады, IYT и скручивания в планке."),
     (re.compile(r"\bLow-intensity traversing, easy bouldering or very easy routes\.?") , "Лёгкий траверс, простые боулдеры или очень лёгкие трассы."),
@@ -97,6 +153,16 @@ _DISPLAY_ALIASES = (
     (re.compile(r"\bUse a few harder moves or problems to prepare for the session\.?") , "Сделай несколько более сложных движений или боулдеров перед основной частью."),
     (re.compile(r"\bRest between sets\.?") , "Отдохни между сериями."),
     (re.compile(r"\bReduce grade if failing or becoming too pumped\.?") , "Снизь сложность, если срываешься или слишком забиваются предплечья."),
+    (re.compile(r"\bUse terrain two grades below flash; stop at one minute even on a longer rope route\.?", re.IGNORECASE), "Выбери трассу примерно на две категории ниже флэш-уровня; остановись через минуту, даже если трасса длиннее."),
+    (re.compile(r"\bUse terrain two grades below flash; each climb lasts at most one minute\.?", re.IGNORECASE), "Выбери трассу примерно на две категории ниже флэш-уровня; каждый отрезок длится не больше минуты."),
+    (re.compile(r"\bEasy half is far below onsight limit; harder half is around onsight grade\.?", re.IGNORECASE), "Лёгкая половина заметно ниже онсайт-уровня, сложная — примерно на уровне онсайта."),
+    (re.compile(r"\bUse four routes or circuits about four grades below flash; each rep lasts one to three minutes\.?", re.IGNORECASE), "Используй четыре трассы или круга примерно на четыре категории ниже флэш-уровня; каждый повтор длится 1–3 минуты."),
+    (re.compile(r"\bClimb several grades below flash and avoid pump\.?", re.IGNORECASE), "Лезь на несколько категорий ниже флэш-уровня и не допускай пампа."),
+    (re.compile(r"\bStart easy and finish breathing heavily\.?", re.IGNORECASE), "Начни легко и постепенно доведи темп до заметно учащённого дыхания."),
+    (re.compile(r"\b15 controlled circles forward and 15 backward\.?", re.IGNORECASE), "Сделай 15 контролируемых кругов вперёд и 15 назад."),
+    (re.compile(r"\bNo weights\.?", re.IGNORECASE), "Без дополнительного веса."),
+    (re.compile(r"\bUse a theraband or light weights\.?", re.IGNORECASE), "Используй эластичную ленту или лёгкий вес."),
+    (re.compile(r"\bBuild intensity slowly\.?", re.IGNORECASE), "Повышай интенсивность постепенно."),
     (re.compile(r"\bauto[_ -]?belay\b", re.IGNORECASE), "автостраховка"),
     (re.compile(r"\bавтобейл\b", re.IGNORECASE), "автостраховка"),
     (re.compile(r"\bclimbing[_ -]?gym\b", re.IGNORECASE), "скалодром"),
@@ -367,13 +433,18 @@ def _content(candidate: PlanCandidate, *, blocks: list[dict], version: int) -> d
             "version": version,
             "summary": candidate.summary or candidate.title,
             "title": candidate.title,
+            "purpose": candidate.purpose,
             "notes": candidate.notes,
+            "intensity": candidate.intensity,
+            "rest_guidance": candidate.rest_guidance,
             "current_focus": candidate.focus,
             "weekly_schedule": {item.day: item.activity for item in candidate.weekly_schedule},
             "guardrails": candidate.guardrails,
             "goals": [goal.model_dump(mode="json") for goal in candidate.goals],
             "phases": [phase.model_dump(mode="json") for phase in candidate.phases],
             "blocks": blocks,
+            "stop_conditions": candidate.stop_conditions,
+            "logging_guidance": candidate.logging_guidance,
             "adaptation_reason": candidate.adaptation_reason,
             "location": candidate.location,
         }
@@ -427,7 +498,13 @@ async def _find_relevant_target(
         if target.scope != candidate.scope:
             raise ValueError("target plan scope does not match candidate scope")
         return target
-    if candidate.action != "update":
+    # A detailed week is an immutable revision of the same dated child, even
+    # when the model says "create" again on a retry. Session creates remain
+    # distinct because an athlete can train twice a day.
+    if (
+        candidate.action != "update"
+        and (candidate.scope != "week" or parent_id is None)
+    ):
         return None
     rows = (
         await session.scalars(
@@ -445,14 +522,95 @@ async def _find_relevant_target(
     matches = [row for row in rows if row.parent_id == parent_id]
     if candidate.scope in {"week", "session"}:
         same_date = [row for row in matches if row.start_date == start]
+        if candidate.action == "create":
+            # A retry for the same calendar week becomes a revision; a later
+            # calendar week is a new sibling and must never retire week one.
+            matches = same_date
         # Legacy free-form "update my plan" had no stable target ID.  It is
         # unambiguous only when one scope sibling exists; multiple siblings
         # remain untouched until an explicit target_plan_id is supplied.
-        if same_date:
+        elif same_date:
             matches = same_date
     if len(matches) > 1:
         raise ValueError("ambiguous active plan update; provide target_plan_id")
     return matches[0] if matches else None
+
+
+async def _infer_program_parent(
+    session: AsyncSession,
+    *,
+    athlete_id: int,
+    start: date,
+    end: date | None,
+    visibility: str,
+) -> int | None:
+    """Attach a dated week to one unambiguous active program that contains it."""
+
+    rows = (
+        await session.scalars(
+            select(Plan)
+            .where(
+                Plan.athlete_id == athlete_id,
+                Plan.scope == "program",
+                Plan.status == "active",
+                Plan.visibility == visibility,
+                Plan.start_date <= start,
+            )
+            .order_by(Plan.created_at.desc(), Plan.id.desc())
+        )
+    ).all()
+    matches = [
+        row
+        for row in rows
+        if row.end_date is None or (end or start) <= row.end_date
+    ]
+    return matches[0].id if len(matches) == 1 else None
+
+
+def _session_card(child: Plan) -> dict[str, Any]:
+    """Denormalize the exact saved child for synchronous chat rendering."""
+
+    content = child.content or {}
+    return _clean(
+        {
+            "id": child.id,
+            "date": child.start_date.isoformat(),
+            "title": content.get("summary"),
+            "purpose": content.get("purpose"),
+            "location": content.get("location"),
+            "intensity": content.get("intensity"),
+            "rest_guidance": content.get("rest_guidance"),
+            "blocks": content.get("blocks", []),
+            "stop_conditions": content.get("stop_conditions", []),
+            "logging_guidance": content.get("logging_guidance", []),
+            "notes": content.get("notes"),
+        }
+    )
+
+
+async def _refresh_week_session_cards(session: AsyncSession, week_id: int) -> None:
+    """Rehydrate a week's synchronous view from its canonical active children."""
+
+    week = await session.get(Plan, week_id)
+    if week is None or week.scope != "week" or week.status != "active":
+        return
+    children = (
+        await session.scalars(
+            select(Plan)
+            .where(
+                Plan.athlete_id == week.athlete_id,
+                Plan.parent_id == week.id,
+                Plan.scope == "session",
+                Plan.status == "active",
+            )
+            .order_by(Plan.start_date, Plan.id)
+        )
+    ).all()
+    week.content = {
+        **(week.content or {}),
+        "sessions": [_session_card(child) for child in children],
+    }
+    await session.flush()
 
 
 async def _materialize_sessions(
@@ -465,7 +623,7 @@ async def _materialize_sessions(
     source_message_id: int,
     evidence: list[str],
     visibility: str,
-) -> None:
+) -> list[Plan]:
     supplied = list(candidate.sessions)
     explicit_dates = {item.date for item in supplied if item.date is not None}
     # A program's weekly_schedule is a repeating template, not three dated
@@ -494,6 +652,7 @@ async def _materialize_sessions(
             )
         )
     materialized_days: set[date] = set()
+    children: list[Plan] = []
     for supplied_session in supplied:
         session_day = supplied_session.date or (start if len(supplied) == 1 else None)
         if session_day is None:
@@ -502,6 +661,7 @@ async def _materialize_sessions(
             raise ValueError("session date is outside its plan")
         if session_day in materialized_days:
             raise ValueError("duplicate materialized session date")
+        _validate_session_weekday(supplied_session, session_day)
         materialized_days.add(session_day)
         raw_blocks = [_clean(block.model_dump(mode="json")) for block in supplied_session.blocks]
         blocks = await _validate_blocks(
@@ -512,7 +672,12 @@ async def _materialize_sessions(
             {
                 "version": 1,
                 "summary": supplied_session.title or parent.content.get("summary"),
+                "purpose": supplied_session.purpose,
+                "intensity": supplied_session.intensity,
+                "rest_guidance": supplied_session.rest_guidance,
                 "blocks": blocks,
+                "stop_conditions": supplied_session.stop_conditions,
+                "logging_guidance": supplied_session.logging_guidance,
                 "notes": supplied_session.notes,
                 "adaptation_reason": candidate.adaptation_reason,
                 "location": supplied_session.location or candidate.location,
@@ -533,6 +698,8 @@ async def _materialize_sessions(
             evidence=evidence,
         )
         session.add(child)
+        children.append(child)
+    return children
 
 
 async def save_plan(
@@ -582,6 +749,14 @@ async def save_plan(
         if candidate.parent_plan_id is not None
         else (explicit_target.parent_id if explicit_target is not None else None)
     )
+    if candidate.scope == "week" and parent_id is None:
+        parent_id = await _infer_program_parent(
+            session,
+            athlete_id=athlete_id,
+            start=start,
+            end=end,
+            visibility=visibility,
+        )
     if parent_id is not None:
         parent = await _owner_plan(session, athlete_id, parent_id)
         if parent.status != "active":
@@ -641,8 +816,10 @@ async def save_plan(
             await _replace_children(session, target, today)
     session.add(record)
     await session.flush()
+    if record.scope == "session" and record.parent_id is not None:
+        await _refresh_week_session_cards(session, record.parent_id)
     if candidate.scope in {"program", "week"}:
-        await _materialize_sessions(
+        children = await _materialize_sessions(
             session,
             parent=record,
             candidate=candidate,
@@ -653,6 +830,17 @@ async def save_plan(
             visibility=visibility,
         )
         await session.flush()
+        if record.scope == "week":
+            await _refresh_week_session_cards(session, record.id)
+        elif children:
+            # A program may deliberately contain direct dated sessions. Keep
+            # their synchronous summaries, while week/session revisions use
+            # the canonical propagation path above.
+            record.content = {
+                **record.content,
+                "sessions": [_session_card(child) for child in children],
+            }
+            await session.flush()
     return record
 
 
@@ -685,6 +873,12 @@ def render_training_plan(plan: Plan, *, detailed: bool = False) -> str:
             lines.append(f"Место: {_display_text(content['location'])}")
         if content.get("notes"):
             lines.append(f"Заметка: {_display_text(content['notes'])}")
+        if content.get("purpose"):
+            lines.append(f"Задача занятия: {_display_text(content['purpose'])}")
+        if content.get("intensity"):
+            lines.append(f"Интенсивность: {_display_text(content['intensity'])}")
+        if content.get("rest_guidance"):
+            lines.append(f"Отдых: {_display_text(content['rest_guidance'])}")
         if content.get("adaptation_reason"):
             lines.append(f"Причина изменения плана: {_display_text(content['adaptation_reason'])}")
         for goal in content.get("goals", []):
@@ -740,8 +934,66 @@ def render_training_plan(plan: Plan, *, detailed: bool = False) -> str:
             for restriction in (snapshot.get("specification") or {}).get("restrictions", []):
                 if isinstance(restriction, dict) and restriction.get("text"):
                     lines.append(f"Ограничение источника: {_display_text(restriction['text'])}")
+        for session_index, card in enumerate(content.get("sessions") or [], start=1):
+            if not isinstance(card, dict):
+                continue
+            title = _display_text(card.get("title") or "Тренировка")
+            lines.append(f"## Занятие {session_index}: {card.get('date', '')} — {title}")
+            if card.get("id") is not None:
+                lines.append(f"ID дочернего плана: #{card['id']}")
+            if card.get("purpose"):
+                lines.append(f"Цель занятия: {_display_text(card['purpose'])}")
+            if card.get("intensity"):
+                lines.append(f"Интенсивность: {_display_text(card['intensity'])}")
+            if card.get("rest_guidance"):
+                lines.append(f"Отдых: {_display_text(card['rest_guidance'])}")
+            for block_index, child_block in enumerate(card.get("blocks") or [], start=1):
+                if not isinstance(child_block, dict):
+                    continue
+                label = _display_text(child_block.get("title") or child_block.get("kind", "блок"))
+                lines.append(f"### {session_index}.{block_index}. {label}")
+                parameters = _parameters_text(child_block, detailed=True)
+                if parameters:
+                    lines.append(f"Параметры: {parameters}")
+                if child_block.get("instruction"):
+                    lines.append(f"Инструкция: {_display_text(child_block['instruction'])}")
+                snapshot = child_block.get("protocol_snapshot") or {}
+                if snapshot:
+                    provenance = [
+                        f"каталог #{child_block.get('protocol_id')}"
+                        if child_block.get("protocol_id")
+                        else "каталог",
+                        f"{snapshot.get('slug')} v{snapshot.get('version')}"
+                        if snapshot.get("slug")
+                        else "",
+                    ]
+                    lines.append("Источник: " + ", ".join(item for item in provenance if item))
+                elif child_block.get("ad_hoc"):
+                    lines.append("Источник: личный блок (не каталог)")
+                steps = child_block.get("effective_steps")
+                if isinstance(steps, list):
+                    lines.append("Эффективное назначение Sam:")
+                else:
+                    steps = (snapshot.get("specification") or {}).get("steps", [])
+                lines.extend(_step_lines(steps, detailed=True))
+                for restriction in (snapshot.get("specification") or {}).get(
+                    "restrictions", []
+                ):
+                    if isinstance(restriction, dict) and restriction.get("text"):
+                        lines.append(
+                            "Ограничение источника: "
+                            + _display_text(restriction["text"])
+                        )
+            for condition in card.get("stop_conditions") or []:
+                lines.append(f"Остановиться/снизить нагрузку: {_display_text(condition)}")
+            for item in card.get("logging_guidance") or []:
+                lines.append(f"Записать после: {_display_text(item)}")
         for guardrail in content.get("guardrails") or []:
             lines.append(f"Ограничение плана: {_display_text(guardrail)}")
+        for condition in content.get("stop_conditions") or []:
+            lines.append(f"Остановиться/снизить нагрузку: {_display_text(condition)}")
+        for item in content.get("logging_guidance") or []:
+            lines.append(f"Записать после: {_display_text(item)}")
         return "\n".join(lines)
 
     def human_day(value: date) -> str:
@@ -759,6 +1011,14 @@ def render_training_plan(plan: Plan, *, detailed: bool = False) -> str:
         goal = first_goal.get("title") if first_goal else None
     if goal:
         lines.append(f"Цель: {_display_text(goal)}")
+    if content.get("purpose") and content.get("purpose") != goal:
+        lines.append(f"Задача занятия: {_display_text(content['purpose'])}")
+    if content.get("location"):
+        lines.append(f"Место: {_display_text(content['location'])}")
+    if content.get("intensity"):
+        lines.append(f"Интенсивность: {_display_text(content['intensity'])}")
+    if content.get("rest_guidance"):
+        lines.append(f"Отдых: {_display_text(content['rest_guidance'])}")
     block_minutes = [block_duration_minutes(block) for block in blocks]
     minutes = [value for value in block_minutes if value is not None]
     if minutes:
@@ -780,8 +1040,76 @@ def render_training_plan(plan: Plan, *, detailed: bool = False) -> str:
             suffix = f" ({dates})" if dates else ""
             lines.append(f"• {label}{suffix}" + (f": {objective}" if objective else ""))
     schedule = content.get("weekly_schedule") or {}
-    if schedule and plan.scope != "session":
+    session_cards = [
+        item for item in content.get("sessions", []) if isinstance(item, dict)
+    ]
+    if schedule and plan.scope != "session" and not session_cards:
         lines.append("Расписание: " + "; ".join(f"{_display_text(day)} — {_display_text(activity)}" for day, activity in schedule.items()))
+    if session_cards and plan.scope != "session":
+        lines.append("Занятия:")
+        for session_index, card in enumerate(session_cards, start=1):
+            try:
+                card_day = date.fromisoformat(str(card.get("date")))
+                day_text = human_day(card_day)
+            except (TypeError, ValueError):
+                day_text = str(card.get("date") or "дата не указана")
+            title = _display_text(card.get("title") or "Тренировка")
+            lines.append(f"• {day_text} — {title}")
+            if card.get("purpose"):
+                lines.append(f"  Цель занятия: {_display_text(card['purpose'])}")
+            if card.get("location"):
+                lines.append(f"  Место: {_display_text(card['location'])}")
+            if card.get("intensity"):
+                lines.append(f"  Интенсивность: {_display_text(card['intensity'])}")
+            if card.get("rest_guidance"):
+                lines.append(f"  Отдых: {_display_text(card['rest_guidance'])}")
+            card_blocks = [
+                item for item in card.get("blocks", []) if isinstance(item, dict)
+            ]
+            card_safety: list[str] = []
+            for block_index, block in enumerate(card_blocks, start=1):
+                label = _display_text(block.get("title") or block.get("kind", "блок"))
+                parameters = _parameters_text(block, detailed=False)
+                source_suffix = " (каталог)" if block.get("protocol_snapshot") else ""
+                lines.append(
+                    f"  {block_index}. {label}{source_suffix}"
+                    + (f" — {parameters}" if parameters else "")
+                )
+                if block.get("instruction"):
+                    lines.append(f"     {_display_text(block['instruction'])}")
+                snapshot = block.get("protocol_snapshot") or {}
+                steps = block.get("effective_steps")
+                if not isinstance(steps, list):
+                    steps = (snapshot.get("specification") or {}).get("steps", [])
+                lines.extend(
+                    "  " + line
+                    for line in _step_lines(
+                        steps,
+                        depth=1,
+                        detailed=False,
+                        include_text=True,
+                        source_localized_only=bool(snapshot),
+                    )
+                )
+                for restriction in (snapshot.get("specification") or {}).get(
+                    "restrictions", []
+                ):
+                    if isinstance(restriction, dict) and restriction.get("text"):
+                        restriction_text = _display_text(restriction["text"])
+                        if restriction_text not in card_safety:
+                            card_safety.append(restriction_text)
+            if card_safety:
+                lines.append("  Важно: " + "; ".join(card_safety))
+            if card.get("stop_conditions"):
+                lines.append(
+                    "  Когда снизить нагрузку/остановиться: "
+                    + "; ".join(_display_text(item) for item in card["stop_conditions"])
+                )
+            if card.get("logging_guidance"):
+                lines.append(
+                    "  После занятия сообщи: "
+                    + "; ".join(_display_text(item) for item in card["logging_guidance"])
+                )
     for index, block in enumerate(blocks, start=1):
         label = _display_text(block.get("title") or block.get("kind", "блок"))
         parameters = _parameters_text(block, detailed=False)
@@ -815,7 +1143,9 @@ def render_training_plan(plan: Plan, *, detailed: bool = False) -> str:
         for restriction in restrictions:
             if isinstance(restriction, dict) and restriction.get("text"):
                 text = _display_text(restriction["text"])
-                if _is_russian_text(text) and text not in safety:
+                # Safety restrictions must never disappear merely because the
+                # source card has not yet received a Russian presentation alias.
+                if text not in safety:
                     safety.append(text)
     for guardrail in content.get("guardrails") or []:
         text = _display_text(guardrail)
@@ -823,6 +1153,16 @@ def render_training_plan(plan: Plan, *, detailed: bool = False) -> str:
             safety.append(text)
     if safety:
         lines.append("Важно: " + "; ".join(safety))
+    if content.get("stop_conditions"):
+        lines.append(
+            "Когда снизить нагрузку/остановиться: "
+            + "; ".join(_display_text(item) for item in content["stop_conditions"])
+        )
+    if content.get("logging_guidance"):
+        lines.append(
+            "После занятия сообщи: "
+            + "; ".join(_display_text(item) for item in content["logging_guidance"])
+        )
     return "\n".join(lines)
 
 
@@ -873,6 +1213,9 @@ async def planning_context(
             "start_date": row.start_date.isoformat(),
             "end_date": row.end_date.isoformat() if row.end_date else None,
             "summary": (row.content or {}).get("summary"),
+            "purpose": (row.content or {}).get("purpose"),
+            "intensity": (row.content or {}).get("intensity"),
+            "rest_guidance": (row.content or {}).get("rest_guidance"),
             "adaptation_reason": (row.content or {}).get("adaptation_reason"),
             "goals": (row.content or {}).get("goals", []),
             "phases": (row.content or {}).get("phases", []),
@@ -880,6 +1223,9 @@ async def planning_context(
             "guardrails": (row.content or {}).get("guardrails", []),
             "location": (row.content or {}).get("location"),
             "blocks": (row.content or {}).get("blocks", []),
+            "sessions": (row.content or {}).get("sessions", []),
+            "stop_conditions": (row.content or {}).get("stop_conditions", []),
+            "logging_guidance": (row.content or {}).get("logging_guidance", []),
         }
 
     return {"program": brief(program), "week": brief(week), "session": brief(session_plan)}

@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -10,6 +10,7 @@ from app.planning import (
     begin_log,
     confirm_planned_session,
     latest_session_plan,
+    planning_context,
     render_training_plan,
     save_plan,
 )
@@ -432,6 +433,185 @@ async def test_explicit_sessions_win_over_weekly_labels_and_rests_are_not_sessio
         )
         children = (await session.scalars(select(Plan).where(Plan.parent_id == week.id))).all()
         assert len(children) == 1 and children[0].content["summary"] == "concrete Tuesday"
+
+
+async def test_materialized_session_rejects_weekday_that_conflicts_with_date(database):
+    day = date(2026, 10, 21)  # Wednesday
+    async with database.sessions() as session:
+        alexey = await session.scalar(select(Athlete).where(Athlete.name == "Alexey"))
+        source = await _message(session, alexey.id, 8121, "подробная неделя")
+        with pytest.raises(ValueError, match="weekday .* conflicts"):
+            await save_plan(
+                session,
+                athlete_id=alexey.id,
+                candidate=PlanCandidate(
+                    action="create",
+                    scope="week",
+                    start_date=day,
+                    sessions=[
+                        PlannedSessionCandidate(
+                            date=day,
+                            day="Tuesday",
+                            title="Лёгкое лазание во вторник",
+                            blocks=[
+                                PlannedBlockCandidate(
+                                    kind="climb", ad_hoc=True, title="Лёгкое лазание"
+                                )
+                            ],
+                        )
+                    ],
+                ),
+                source_message_id=source.id,
+                evidence=["подробная неделя"],
+                today=day,
+            )
+
+
+async def test_new_calendar_week_does_not_supersede_previous_program_week(database):
+    first_day = date(2026, 10, 21)
+    async with database.sessions() as session:
+        alexey = await session.scalar(select(Athlete).where(Athlete.name == "Alexey"))
+        source = await _message(session, alexey.id, 8122, "две недели программы")
+        program = await save_plan(
+            session,
+            athlete_id=alexey.id,
+            candidate=PlanCandidate(
+                action="create",
+                scope="program",
+                start_date=first_day,
+                end_date=date(2026, 11, 20),
+            ),
+            source_message_id=source.id,
+            evidence=["программа"],
+            today=first_day,
+        )
+        week_one = await save_plan(
+            session,
+            athlete_id=alexey.id,
+            candidate=PlanCandidate(
+                action="create",
+                scope="week",
+                parent_plan_id=program.id,
+                start_date=first_day,
+            ),
+            source_message_id=source.id,
+            evidence=["первая неделя"],
+            today=first_day,
+        )
+        week_two = await save_plan(
+            session,
+            athlete_id=alexey.id,
+            candidate=PlanCandidate(
+                action="create",
+                scope="week",
+                parent_plan_id=program.id,
+                start_date=first_day + timedelta(days=7),
+            ),
+            source_message_id=source.id,
+            evidence=["вторая неделя"],
+            today=first_day,
+        )
+
+        await session.refresh(week_one)
+        assert week_one.status == "active"
+        assert week_two.status == "active"
+        assert week_two.supersedes_id is None
+
+
+async def test_session_revision_rehydrates_week_for_chat_context_and_export(database):
+    day = date(2026, 10, 21)
+    async with database.sessions() as session:
+        alexey = await session.scalar(select(Athlete).where(Athlete.name == "Alexey"))
+        source = await _message(session, alexey.id, 8123, "первая версия недели")
+        week = await save_plan(
+            session,
+            athlete_id=alexey.id,
+            candidate=PlanCandidate(
+                action="create",
+                scope="week",
+                start_date=day,
+                summary="Первая неделя",
+                sessions=[
+                    PlannedSessionCandidate(
+                        date=day,
+                        title="Старое занятие",
+                        purpose="Старое назначение",
+                        intensity="Легко",
+                        rest_guidance="Две минуты",
+                        blocks=[
+                            PlannedBlockCandidate(
+                                kind="climb",
+                                ad_hoc=True,
+                                title="Старый блок",
+                                instruction="Старое указание.",
+                                parameters=[
+                                    PlanParameter(
+                                        name="duration_minutes", value=10, unit="min"
+                                    )
+                                ],
+                            )
+                        ],
+                        stop_conditions=["Боль"],
+                        logging_guidance=["старый результат"],
+                    )
+                ],
+            ),
+            source_message_id=source.id,
+            evidence=["первая версия"],
+            today=day,
+        )
+        original = await latest_session_plan(session, athlete_id=alexey.id, day=day)
+        assert original is not None
+        revision_source = await _message(session, alexey.id, 8124, "измени занятие")
+        revision = await save_plan(
+            session,
+            athlete_id=alexey.id,
+            candidate=PlanCandidate(
+                action="update",
+                scope="session",
+                target_plan_id=original.id,
+                start_date=day,
+                title="Новое занятие",
+                summary="Новое занятие",
+                purpose="Обновлённое назначение",
+                intensity="Умеренно, памп до 4 из 10",
+                rest_guidance="Три минуты между подходами",
+                blocks=[
+                    PlannedBlockCandidate(
+                        kind="climb",
+                        ad_hoc=True,
+                        title="Новый блок",
+                        instruction="Новое указание.",
+                        parameters=[
+                            PlanParameter(name="duration_minutes", value=20, unit="min")
+                        ],
+                    )
+                ],
+                stop_conditions=["Памп выше 4 из 10"],
+                logging_guidance=["новый результат"],
+            ),
+            source_message_id=revision_source.id,
+            evidence=["обновление"],
+            today=day,
+        )
+
+        await session.refresh(week)
+        cards = week.content["sessions"]
+        assert len(cards) == 1
+        assert cards[0]["id"] == revision.id
+        assert cards[0]["title"] == "Новое занятие"
+        assert cards[0]["blocks"][0]["parameters"][0]["value"] == 20
+        compact = render_training_plan(week)
+        exported = render_training_plan(week, detailed=True)
+        context = await planning_context(
+            session, athlete_id=alexey.id, today=day, public=False
+        )
+        for view in (compact, exported):
+            assert "Новое занятие" in view and "Новый блок" in view
+            assert "Старое занятие" not in view and "Старый блок" not in view
+        assert context["week"]["sessions"][0]["id"] == revision.id
+        assert context["week"]["sessions"][0]["title"] == "Новое занятие"
+        assert original.status == "superseded"
 
 
 async def test_scope_validation_preserves_private_program_on_group_week_update(database):
