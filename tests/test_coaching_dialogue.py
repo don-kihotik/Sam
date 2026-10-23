@@ -147,6 +147,56 @@ async def test_catalog_illness_and_impersonation_guards(database):
             await validate_catalog_choices(session, candidate, illness_unresolved=False)
 
 
+async def test_campus_and_fingerboard_need_request_or_verified_experience(database):
+    candidate = prescription().plan
+    candidate.blocks = [PlannedBlockCandidate(
+        kind="strength",
+        title="Кампус — лёгкие касания",
+        instruction="Контролируемые движения на кампусе.",
+        ad_hoc=True,
+    )]
+    equipment_only = {"equipment": [{"name": "campus board", "available": True}]}
+    async with database.sessions() as session:
+        with pytest.raises(ValueError, match="availability is not training experience"):
+            await validate_catalog_choices(
+                session,
+                candidate,
+                illness_unresolved=False,
+                training_profile=equipment_only,
+                request_text="Составь обычную тренировку",
+            )
+        with pytest.raises(ValueError, match="availability is not training experience"):
+            await validate_catalog_choices(
+                session,
+                candidate,
+                illness_unresolved=False,
+                training_profile=equipment_only,
+                request_text="Боулдеринговый зал, турник, кампус",
+            )
+        with pytest.raises(ValueError, match="availability is not training experience"):
+            await validate_catalog_choices(
+                session,
+                candidate,
+                illness_unresolved=False,
+                training_profile=equipment_only,
+                request_text="Составь тренировку без кампуса",
+            )
+        await validate_catalog_choices(
+            session,
+            candidate,
+            illness_unresolved=False,
+            training_profile=equipment_only,
+            request_text="Добавь лёгкий кампус",
+        )
+        await validate_catalog_choices(
+            session,
+            candidate,
+            illness_unresolved=False,
+            training_profile={"experience": [{"activity": "campus board"}]},
+            request_text="Составь обычную тренировку",
+        )
+
+
 async def test_requested_duration_is_validated_and_survives_reschedule(database, settings):
     ai = DialogueAI([prescription(minutes=45), prescription(minutes=45), prescription(minutes=30),
                     prescription(minutes=45), prescription(minutes=30)])

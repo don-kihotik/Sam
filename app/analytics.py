@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db.models import AnalyticsSnapshot, Workout
+from app.db.models import AnalyticsSnapshot, DailyState, Workout
 from app.grades import grade_rank
 
 __all__ = ["analytics_windows", "grade_rank", "refresh_analytics_snapshots"]
@@ -184,6 +184,27 @@ async def analytics_windows(
             .order_by(Workout.date)
         )
     ).all()
+    daily_states = (
+        await session.scalars(
+            select(DailyState).where(
+                DailyState.athlete_id == athlete_id,
+                DailyState.date >= earliest,
+                DailyState.date <= period_end,
+            )
+        )
+    ).all()
+
+    def skipped_count(states: list[DailyState]) -> int:
+        sources = {
+            item.get("source_message_id")
+            for state in states
+            for item in (state.values or {}).get("session_outcomes", [])
+            if isinstance(item, dict)
+            and item.get("status") == "skipped"
+            and item.get("source_message_id") is not None
+        }
+        return len(sources)
+
     result: dict[str, Any] = {}
     for window in windows:
         start = period_end - timedelta(days=window - 1)
@@ -192,6 +213,11 @@ async def analytics_windows(
         previous = [w for w in rows if w.date is not None and previous_start <= w.date < start]
         current_metrics = _metrics(current)
         previous_metrics = _metrics(previous)
+        current_states = [state for state in daily_states if start <= state.date <= period_end]
+        previous_states = [
+            state for state in daily_states if previous_start <= state.date < start
+        ]
+        current_metrics["skipped_sessions"] = skipped_count(current_states)
         current_metrics["previous"] = {
             "sessions": previous_metrics["sessions"],
             "duration_minutes": previous_metrics["duration_minutes"],
@@ -200,6 +226,7 @@ async def analytics_windows(
             "duration_unknown_sessions": previous_metrics["duration_unknown_sessions"],
             "completed_climbs": previous_metrics["completed_climbs"],
             "unknown_count_entries": previous_metrics["unknown_count_entries"],
+            "skipped_sessions": skipped_count(previous_states),
         }
         result[str(window)] = current_metrics
     all_workouts = (

@@ -10,6 +10,7 @@ from app.db.models import (
     Athlete,
     CatalogSource,
     Correction,
+    DailyState,
     Invitation,
     Message,
     Outbox,
@@ -547,6 +548,13 @@ async def test_skip_is_audited_and_never_creates_an_actual_workout(database, set
         assert "пропущенная" in result.text
         assert plan.status == "skipped"
         assert await session.scalar(select(func.count()).select_from(Workout)) == 1
+        state = await session.scalar(
+            select(DailyState).where(
+                DailyState.athlete_id == athlete.id,
+                DailyState.date == plan.start_date,
+            )
+        )
+        assert state.values["session_outcomes"][-1]["plan_id"] == plan.id
         audit = await session.scalar(select(Correction).where(Correction.target_id == plan.id))
         assert audit.payload["action"] == "skip"
         replay = await handle_training_command(

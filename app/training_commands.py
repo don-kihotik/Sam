@@ -17,7 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.db.models import Athlete, CatalogSource, Correction, Plan
+from app.db.models import Athlete, CatalogSource, Correction, DailyState, Plan
 from app.membership import (
     create_invitation,
     ensure_preference,
@@ -312,6 +312,45 @@ async def handle_training_command(
         if not isinstance(source_message_id, int):
             return CommandResult("Не удалось безопасно отметить пропуск. Повтори команду.")
         plan.status = "skipped"
+        state = await session.scalar(
+            select(DailyState).where(
+                DailyState.athlete_id == athlete.id,
+                DailyState.date == plan.start_date,
+            )
+        )
+        outcome = {
+            "status": "skipped",
+            "source_message_id": source_message_id,
+            "plan_id": plan.id,
+        }
+        if state is None:
+            source_chat_id = _message_chat_id(message)
+            state = DailyState(
+                athlete_id=athlete.id,
+                date=plan.start_date,
+                values={
+                    "session_outcomes": [outcome],
+                    "_visibility": "group"
+                    if source_chat_id is not None and source_chat_id < 0
+                    else "private",
+                },
+                source_message_ids=[source_message_id],
+            )
+            session.add(state)
+        else:
+            values = dict(state.values or {})
+            outcomes = [
+                item
+                for item in values.get("session_outcomes", [])
+                if isinstance(item, dict)
+                and item.get("source_message_id") != source_message_id
+            ]
+            outcomes.append(outcome)
+            values["session_outcomes"] = outcomes
+            state.values = values
+            state.source_message_ids = list(
+                dict.fromkeys([*(state.source_message_ids or []), source_message_id])
+            )
         session.add(
             Correction(
                 athlete_id=athlete.id,

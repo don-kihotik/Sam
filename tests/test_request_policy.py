@@ -122,6 +122,26 @@ async def test_unaddressed_group_offtopic_stays_silent(database, settings):
     assert ai.extract_calls == 0
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Сэм, тебя никто не спрашивал пока", "не вмешиваюсь"),
+        ("Сэм, спасибо тебе, что ты есть. С тобой нескучно.", "Буду рядом"),
+    ],
+)
+async def test_group_social_feedback_is_natural_and_model_free(
+    database, settings, text, expected
+):
+    ai = ScopeAI()
+    async with database.sessions() as session:
+        result = await MessageProcessor(settings, ai).process(
+            session, incoming(80031, text, chat=-100123)
+        )
+        assert expected in result.reply
+        assert await session.scalar(select(func.count()).select_from(Outbox)) == 1
+    assert ai.scope_calls == ai.extract_calls == 0
+
+
 async def test_quota_is_persistent_pre_model_and_edits_do_not_bypass(database, settings):
     settings.policy_hourly_requests = 1
     ai = ScopeAI()

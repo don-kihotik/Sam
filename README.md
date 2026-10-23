@@ -379,6 +379,13 @@ volume until the restored database has passed the acceptance checks above.
 
 - Received messages and full Telegram payloads are saved before media/model processing. Edits retain
   prior text and replace the source's workout contribution; ambiguous legacy merges ask for clarification.
+- In groups, Sam records allowed own-training facts silently and speaks only when directly addressed,
+  replied to, or when a material safety risk clearly warrants an intervention. A model-only
+  `continuation` label cannot make Sam join a conversation between people.
+- Explicitly skipped/cancelled sessions are stored as dated outcomes and never as completed workouts;
+  an exact single matching session plan is marked `skipped` with an audit record.
+- Campus-board and fingerboard availability is not treated as experience. Plans using those tools
+  require a direct request or verified experience in the athlete's own profile.
 - Explicit session identity and source contributions distinguish follow-up details from a new session.
 - Every answer and retrieved history is scoped to the requesting athlete, including in a group.
   Sam refuses requests about another athlete, comparisons, and off-topic assistant tasks.

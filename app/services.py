@@ -117,6 +117,14 @@ _RATING_CUE = (
     r"(?:памп\w*|забит\w*|забил\w*|боль\w*|болит\w*|болезнен\w*|rpe|"
     r"нагрузк\w*|интенсивност\w*|энерги\w*|сон\w*|мотивац\w*|стресс\w*|устал\w*)"
 )
+_MISSED_SESSION = re.compile(
+    r"(?:"
+    r"(?:сорвал\w*|отмен\w*|не\s+состоял\w*)[^.!?\n]{0,40}(?:тренировк\w*|заняти\w*)|"
+    r"(?:тренировк\w*|заняти\w*)[^.!?\n]{0,40}(?:сорвал\w*|отмен\w*|не\s+состоял\w*|пропуст\w*)|"
+    r"(?<!не\s)(?:пропустил\w*)[^.!?\n]{0,30}(?:тренировк\w*|заняти\w*)"
+    r")",
+    re.IGNORECASE,
+)
 
 
 def is_directly_addressed(
@@ -139,6 +147,123 @@ def is_directly_addressed(
         return False
     opening = lowered[:160]
     return bool(_TRANSCRIPTION_ADDRESS_ALIASES.search(opening) or "для тебя" in opening)
+
+
+def explicitly_missed_session(text: str) -> bool:
+    """Recognize a completed non-event, never a merely uncertain future plan."""
+
+    for match in _MISSED_SESSION.finditer(text):
+        start = max(text.rfind(mark, 0, match.start()) for mark in ".!?\n") + 1
+        ends = [text.find(mark, match.end()) for mark in ".!?\n"]
+        ends = [value for value in ends if value >= 0]
+        end = min(ends) + 1 if ends else len(text)
+        sentence = text[start:end]
+        before = text[start : match.start()]
+        if "?" in sentence or re.search(
+            r"\b(?:если|вдруг|возможно|может\s+быть|if|maybe)\b",
+            before,
+            re.IGNORECASE,
+        ):
+            continue
+        if re.search(
+            r"\b(?:не\s+сорвал\w*|не\s+отмен\w*|не\s+пропустил\w*)\b",
+            sentence,
+            re.IGNORECASE,
+        ):
+            continue
+        return True
+    return False
+
+
+async def record_missed_session(
+    session: AsyncSession,
+    *,
+    athlete: Athlete,
+    message: Message,
+    day: date,
+    visibility: str,
+) -> dict[str, Any]:
+    """Record a skipped training opportunity without inventing an actual workout.
+
+    An exact single session plan can be closed automatically.  Otherwise the
+    dated outcome remains useful memory, while no unrelated plan is guessed.
+    """
+
+    state = await session.scalar(
+        select(DailyState).where(
+            DailyState.athlete_id == athlete.id,
+            DailyState.date == day,
+        )
+    )
+    outcome = {"status": "skipped", "source_message_id": message.id}
+    if state is None:
+        state = DailyState(
+            athlete_id=athlete.id,
+            date=day,
+            values={
+                "session_outcomes": [outcome],
+                "_visibility": visibility,
+            },
+            source_message_ids=[message.id],
+        )
+        session.add(state)
+    else:
+        values = dict(state.values or {})
+        outcomes = [
+            item
+            for item in values.get("session_outcomes", [])
+            if isinstance(item, dict) and item.get("source_message_id") != message.id
+        ]
+        outcomes.append(outcome)
+        values["session_outcomes"] = outcomes
+        values["_visibility"] = (
+            "private"
+            if values.get("_visibility") == "private" or visibility == "private"
+            else "group"
+        )
+        state.values = values
+        state.source_message_ids = list(
+            dict.fromkeys([*(state.source_message_ids or []), message.id])
+        )
+
+    matches = list(
+        await session.scalars(
+            select(Plan).where(
+                Plan.athlete_id == athlete.id,
+                Plan.scope == "session",
+                Plan.status == "active",
+                Plan.start_date == day,
+            )
+        )
+    )
+    plan_id = None
+    if len(matches) == 1:
+        plan = matches[0]
+        plan.status = "skipped"
+        plan_id = plan.id
+        session.add(
+            Correction(
+                athlete_id=athlete.id,
+                source_message_id=message.id,
+                target_kind="plan",
+                target_id=plan.id,
+                payload={
+                    "action": "skip",
+                    "plan_id": plan.id,
+                    "date": day.isoformat(),
+                    "source": "natural_language",
+                },
+                status="applied",
+            )
+        )
+    outcome["plan_id"] = plan_id
+    await session.flush()
+    return {
+        "kind": "session_outcome",
+        "status": "skipped",
+        "date": day.isoformat(),
+        "plan_id": plan_id,
+    }
 
 
 def _score_was_explicitly_stated(text: str, value: float) -> bool:
@@ -470,6 +595,10 @@ class MessageProcessor:
                 directly_addressed=addressed,
             )
             remove_inferred_numeric_ratings(incoming.text, extraction)
+            # A group mention between humans may still contain useful own
+            # training facts, but it cannot silently create or revise a plan.
+            if incoming.telegram_chat_id < 0 and not addressed:
+                extraction.plan.action = "none"
             if extraction.plan.action != "none" and extraction.plan.scope == "session":
                 if intent.ambiguity:
                     extraction.plan.action = "none"
@@ -515,6 +644,10 @@ class MessageProcessor:
                     source_text=evidence_text,
                 )
             )
+            missed_outcome = next(
+                (item for item in mutations if item.get("kind") == "session_outcome"),
+                None,
+            )
             try:
                 message.embedding = await self.ai.embed(incoming.text)
             except Exception:  # noqa: BLE001 - embeddings are optional
@@ -527,12 +660,21 @@ class MessageProcessor:
                 if onboarding_step is None and first_pending and first_missing:
                     onboarding_step = first_session_clarification(first_missing)
             # Banter is stored as conversation, never used as a coaching interrupt.
-            should_reply = (
-                addressed
-                or extraction.conversation_intent == "continuation"
-                or (extraction.should_respond and not extraction.is_banter)
-                or onboarding_step is not None
-            )
+            if incoming.telegram_chat_id < 0:
+                # In a group, `continuation` is only a semantic label.  It does
+                # not establish that Sam owns the conversation.  An explicit
+                # address/reply or a genuinely important risk is required.
+                should_reply = addressed or (
+                    extraction.conversation_intent == "important_risk"
+                    and not extraction.is_banter
+                )
+            else:
+                should_reply = (
+                    addressed
+                    or extraction.conversation_intent == "continuation"
+                    or (extraction.should_respond and not extraction.is_banter)
+                    or onboarding_step is not None
+                )
             if extraction.is_banter and not addressed:
                 should_reply = False
             needs_clarification = any(
@@ -540,8 +682,20 @@ class MessageProcessor:
             )
             reply = None
             reply_payload = {}
-            if should_reply or needs_clarification:
-                if onboarding_step is not None:
+            if should_reply or (needs_clarification and addressed):
+                if missed_outcome is not None:
+                    if missed_outcome.get("plan_id"):
+                        reply = (
+                            "Отметил сессию пропущенной; фактическую тренировку не создавал. "
+                            "Чтобы перенести её, напиши новую дату."
+                        )
+                    else:
+                        reply = (
+                            "Записал, что тренировка не состоялась; фактическую тренировку не создавал. "
+                            "Если это был план Сэма, укажи его дату или ответь на карточку."
+                        )
+                    coach_reply = CoachReply(text=reply)
+                elif onboarding_step is not None:
                     reply = onboarding_step.text
                     reply_payload = onboarding_step.payload
                     coach_reply = CoachReply(text=reply)
@@ -621,7 +775,12 @@ class MessageProcessor:
                                         deep=True,
                                     )
                             await validate_catalog_choices(
-                                session, candidate, illness_unresolved=illness_unresolved, as_of=today,
+                                session,
+                                candidate,
+                                illness_unresolved=illness_unresolved,
+                                as_of=today,
+                                training_profile=preference.profile,
+                                request_text=incoming.text,
                             )
                             record = await self._upsert_plan(
                                 session, athlete_id=athlete.id, candidate=candidate,
@@ -838,6 +997,21 @@ class MessageProcessor:
                     message=message,
                     candidate=extraction.training_profile,
                     text=source_text,
+                )
+            )
+        if explicitly_missed_session(source_text) and not extraction.is_banter:
+            missed_day = (
+                extraction.workout.date
+                or extraction.daily_state.date
+                or today
+            )
+            changes.append(
+                await record_missed_session(
+                    session,
+                    athlete=athlete,
+                    message=message,
+                    day=missed_day,
+                    visibility=visibility,
                 )
             )
         for index, c in enumerate([extraction.workout, *extraction.additional_workouts]):

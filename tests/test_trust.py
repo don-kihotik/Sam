@@ -7,7 +7,18 @@ from sqlalchemy import func, select
 
 from app.ai import FakeAIService
 from app.analytics import analytics_windows
-from app.db.models import Athlete, FollowUp, Memory, Message, Outbox, Plan, ProcessingRun, Workout
+from app.db.models import (
+    Athlete,
+    Correction,
+    DailyState,
+    FollowUp,
+    Memory,
+    Message,
+    Outbox,
+    Plan,
+    ProcessingRun,
+    Workout,
+)
 from app.delivery import split_reply
 from app.memory import ContextBuilder, recent_message_text
 from app.schemas import (
@@ -110,6 +121,100 @@ async def test_banter_cannot_create_memory_even_if_model_proposes_it(database, s
         memories = await s.scalar(select(func.count()).select_from(Memory))
     assert result.reply is None
     assert memories == 0
+
+
+async def test_group_continuation_does_not_let_sam_join_human_conversation(
+    database, settings
+):
+    extraction = MessageExtraction(
+        normalized_text="Потом после тренировки расскажу, что пролез",
+        conversation_intent="continuation",
+        should_respond=False,
+    )
+    ai = FakeAIService(extraction, reply="Не должен появиться")
+    async with database.sessions() as session:
+        result = await MessageProcessor(settings, ai).process(
+            session,
+            incoming(2111, "Потом после тренировки расскажу, что пролез"),
+        )
+        assert result.reply is None
+        assert await session.scalar(select(func.count()).select_from(Outbox)) == 0
+    assert ai.coach_contexts == []
+
+
+async def test_direct_reply_to_sam_still_continues_group_conversation(database, settings):
+    extraction = MessageExtraction(
+        normalized_text="Да, сделай подробнее",
+        conversation_intent="continuation",
+        should_respond=False,
+    )
+    ai = FakeAIService(extraction, reply="Продолжаю по запросу")
+    message = incoming(2112, "Да, сделай подробнее")
+    message.is_reply_to_sam = True
+    async with database.sessions() as session:
+        result = await MessageProcessor(settings, ai).process(session, message)
+        assert result.reply == "Продолжаю по запросу"
+        assert await session.scalar(select(func.count()).select_from(Outbox)) == 1
+
+
+async def test_missed_group_session_is_recorded_silently_without_fake_workout(
+    database, settings
+):
+    day = date(2026, 9, 11)
+    extraction = MessageExtraction(
+        normalized_text="Вчера сорвалась тренировка",
+        conversation_intent="silent",
+        should_respond=False,
+        workout=WorkoutCandidate(
+            present=False,
+            date=day,
+            date_inferred=True,
+            date_precision="day",
+            notes="Тренировка сорвалась.",
+            evidence=["Вчера сорвалась тренировка"],
+        ),
+    )
+    async with database.sessions() as session:
+        plan = Plan(
+            athlete_id=1,
+            scope="session",
+            start_date=day,
+            end_date=day,
+            content={"summary": "planned", "blocks": []},
+        )
+        session.add(plan)
+        session.add(
+            DailyState(
+                athlete_id=1,
+                date=day,
+                values={"notes": "PRIVATE_CANARY", "_visibility": "private"},
+                source_message_ids=[],
+            )
+        )
+        await session.commit()
+        before = await session.scalar(select(func.count()).select_from(Workout))
+        result = await MessageProcessor(settings, FakeAIService(extraction)).process(
+            session,
+            incoming(2113, "Вчера сорвалась тренировка"),
+        )
+        await session.refresh(plan)
+        state = await session.scalar(
+            select(DailyState).where(DailyState.athlete_id == 1, DailyState.date == day)
+        )
+        audit = await session.scalar(
+            select(Correction).where(
+                Correction.target_kind == "plan", Correction.target_id == plan.id
+            )
+        )
+        assert result.reply is None
+        assert plan.status == "skipped"
+        assert state.values["session_outcomes"][-1]["status"] == "skipped"
+        assert state.values["_visibility"] == "private"
+        assert audit.payload["source"] == "natural_language"
+        assert await session.scalar(select(func.count()).select_from(Workout)) == before
+        metrics = await analytics_windows(session, 1, date(2026, 9, 12), windows=(7,))
+        assert metrics["7"]["skipped_sessions"] == 1
+        assert metrics["7"]["sessions"] == 0  # Skip is not an actual workout.
 
 
 def test_talking_about_sam_is_not_a_direct_address():

@@ -63,6 +63,21 @@ _SOCIAL = re.compile(
     r"(?:(?:сэм|sam)[, ]+)?(?:привет|спасибо|ок|ok(?:ay)?|да|ага|hi|hello|thanks|yes)[!. ]*",
     re.IGNORECASE,
 )
+_QUIET_FEEDBACK = re.compile(
+    r"(?:(?:сэм|sam)[,!: ]+)?(?:"
+    r"тебя\s+(?:же\s+)?никто\s+не\s+спрашивал(?:\s+пока)?|"
+    r"не\s+(?:влезай|вмешивайся)|(?:помолчи|молчи)"
+    r")[!. ]*",
+    re.IGNORECASE,
+)
+_SOCIAL_PRAISE = re.compile(
+    r"(?:(?:сэм|sam)[,!: ]+)?(?:"
+    r"спасибо\s+тебе[^\n]{0,120}|"
+    r"(?:хорошо|круто|здорово),?\s+что\s+ты\s+есть[^\n]{0,80}|"
+    r"с\s+тобой\s+(?:не)?скучно[^\n]{0,80}"
+    r")[!. ]*",
+    re.IGNORECASE,
+)
 _AFFIRMATIVE_SOCIAL = re.compile(
     r"(?:(?:сэм|sam)[, ]+)?(?:ок|ok(?:ay)?|да|ага|yes)[!. ]*",
     re.IGNORECASE,
@@ -75,6 +90,10 @@ def cheap_decision(text: str) -> str | None:
         return "offtopic"
     if _SAFE_COMMAND.fullmatch(text.strip()):
         return "command"
+    if _QUIET_FEEDBACK.fullmatch(text.strip()):
+        return "social_quiet"
+    if _SOCIAL_PRAISE.fullmatch(text.strip()):
+        return "social_praise"
     if _SOCIAL.fullmatch(text.strip()):
         return "social"
     return None
@@ -270,8 +289,16 @@ async def preflight_request(
         )
     elif decision == "offtopic":
         reply = SCOPE_REPLY
-    elif decision == "social":
-        if _AFFIRMATIVE_SOCIAL.fullmatch(current):
+    elif decision in {"social", "social_quiet", "social_praise"}:
+        if decision == "social_quiet":
+            reply = "Понял, не вмешиваюсь."
+        elif decision == "social_praise":
+            reply = "Спасибо. Буду рядом, когда понадоблюсь."
+        elif not _AFFIRMATIVE_SOCIAL.fullmatch(current):
+            # Greetings and thanks never spend a model request, even while a
+            # planning task happens to be open.
+            reply = "Я здесь. Пиши, что сделал на тренировке или что хочешь спланировать."
+        else:
             context, has_continuity_anchor = await _scope_context(
                 session, athlete=athlete, message=message
             )
@@ -281,10 +308,6 @@ async def preflight_request(
                 decision = None
             else:
                 reply = "Я здесь. Пиши, что сделал на тренировке или что хочешь спланировать."
-        else:
-            # Greetings and thanks never spend a model request, even while a
-            # planning task happens to be open.
-            reply = "Я здесь. Пиши, что сделал на тренировке или что хочешь спланировать."
     elif decision == "command":
         # Exact supported commands are still owner-checked by their handlers.
         # Commands which generate new plans also need a model budget below.

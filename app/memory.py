@@ -224,7 +224,8 @@ async def render_history_audit(
     lines.append(
         f"За 7 дней: {stats['sessions']} сессий; "
         f"{stats['duration_minutes'] if stats['duration_minutes'] is not None else '?'} известных минут; "
-        f"длительность не указана у {stats['duration_unknown_sessions']} сессий."
+        f"длительность не указана у {stats['duration_unknown_sessions']} сессий; "
+        f"пропущено по явным сообщениям: {stats['skipped_sessions']}."
     )
     public = chat_id is not None and chat_id < 0
     pquery = select(Plan).where(Plan.athlete_id == athlete.id, Plan.status == "active")

@@ -229,17 +229,73 @@ def useful_followup(question: str | None, pending_questions: list[str]) -> str |
 
 
 async def validate_catalog_choices(
-    session, candidate: PlanCandidate, *, illness_unresolved: bool, as_of=None
+    session,
+    candidate: PlanCandidate,
+    *,
+    illness_unresolved: bool,
+    as_of=None,
+    training_profile: dict | None = None,
+    request_text: str = "",
 ) -> None:
     """Conservative product gate, not an assessment that someone is fit to train."""
     protocols = list(await session.scalars(select(CatalogProtocol)))
     by_id = {p.id: p for p in protocols}
     names = {p.title.casefold().strip() for p in protocols}
     blocks = [*candidate.blocks, *(b for s in candidate.sessions for b in s.blocks)]
+    high_risk = re.compile(
+        r"\b(?:campus(?:\s+board)?|fingerboard|hangboard)\b|"
+        r"\b(?:кампус\w*|фингерборд\w*|хангборд\w*)\b",
+        re.IGNORECASE,
+    )
+    experience = (training_profile or {}).get("experience", [])
+    experience_text = " ".join(
+        str(item.get(key, ""))
+        for item in experience
+        if isinstance(item, dict)
+        for key in ("activity", "discipline", "tool", "name")
+    )
+    has_verified_experience = bool(high_risk.search(experience_text))
+    request_action = re.compile(
+        r"(?:добав\w*|включ\w*|назнач\w*|хочу|сделай|давай|план\w*|"
+        r"add|include|want|train|workout)",
+        re.IGNORECASE,
+    )
+    explicitly_requested = any(
+        request_action.search(request_text[max(0, match.start() - 60) : match.end() + 60])
+        for match in high_risk.finditer(request_text)
+    ) and not bool(
+        re.search(
+            r"(?:без|не\s+(?:надо|хочу)|исключ\w*|without|exclude|do\s+not)"
+            r"[^.!?\n]{0,30}(?:campus|fingerboard|hangboard|кампус\w*|фингерборд\w*|хангборд\w*)",
+            request_text,
+            re.IGNORECASE,
+        )
+    )
     for block in blocks:
         if block.ad_hoc and (block.title or "").casefold().strip() in names:
             raise ValueError("An ad_hoc block must have its own descriptive title, not a catalog protocol title")
         protocol = by_id.get(block.protocol_id)
+        block_text = " ".join(
+            filter(
+                None,
+                [
+                    block.title,
+                    block.instruction,
+                    protocol.title if protocol else None,
+                    json.dumps(protocol.specification, ensure_ascii=False, default=str)
+                    if protocol
+                    else None,
+                ],
+            )
+        )
+        if high_risk.search(block_text) and not (
+            explicitly_requested or has_verified_experience
+        ):
+            raise ValueError(
+                "Campus/fingerboard equipment availability is not training experience. "
+                "Do not prescribe it unless the athlete explicitly requested it or their "
+                "profile contains verified experience with that tool."
+            )
         near_term = candidate.scope == "session"
         if block in [b for nested in candidate.sessions for b in nested.blocks]:
             dated = next((nested.date for nested in candidate.sessions if block in nested.blocks), None)
